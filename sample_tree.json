@@ -1,0 +1,78 @@
+{
+  "title": "No Network Connectivity",
+  "root_id": "step_1",
+  "steps": {
+    "step_1": {
+      "id": "step_1",
+      "question": "What's the symptom on the device?",
+      "note": "",
+      "options": [
+        {"label": "No network access at all", "next_id": "step_2", "resolution": null},
+        {"label": "Connected, but no/limited internet", "next_id": "step_5", "resolution": null},
+        {"label": "Looks connected, but browsing fails", "next_id": "step_7", "resolution": null}
+      ]
+    },
+    "step_2": {
+      "id": "step_2",
+      "question": "Is the device on Wi-Fi or Ethernet?",
+      "note": "",
+      "options": [
+        {"label": "Wi-Fi", "next_id": "step_3", "resolution": null},
+        {"label": "Ethernet", "next_id": "step_4", "resolution": null}
+      ]
+    },
+    "step_3": {
+      "id": "step_3",
+      "question": "Is Wi-Fi turned on and connected to the correct network?",
+      "note": "",
+      "options": [
+        {"label": "Yes, correct network is selected", "next_id": "step_6", "resolution": null},
+        {"label": "No, or wrong network selected", "next_id": null, "resolution": "Turn Wi-Fi on and connect to the correct SSID, then retest. If it was on the wrong network, this was expected — confirm it's stable after reconnecting."}
+      ]
+    },
+    "step_4": {
+      "id": "step_4",
+      "question": "Is the Ethernet cable fully seated at both ends, with link lights lit?",
+      "note": "",
+      "options": [
+        {"label": "Yes, link light is on", "next_id": "step_6", "resolution": null},
+        {"label": "No link light", "next_id": null, "resolution": "Reseat the cable at both ends and try a known-good cable/port. If the link light stays off, escalate as a cabling or switch-port issue."}
+      ]
+    },
+    "step_5": {
+      "id": "step_5",
+      "question": "Is it just one site/service failing, or is nothing loading?",
+      "note": "",
+      "options": [
+        {"label": "Just one site/service", "next_id": null, "resolution": "Likely an issue on that specific site/service, not the local network. No further local troubleshooting needed."},
+        {"label": "Nothing loads", "next_id": "step_6", "resolution": null}
+      ]
+    },
+    "step_6": {
+      "id": "step_6",
+      "question": "Restart the network adapter (YARI Toolbox → Quick Fixes → Restart Wireless Adapter), then retest. Did that fix it?",
+      "note": "",
+      "options": [
+        {"label": "Yes, fixed", "next_id": null, "resolution": "Resolved by resetting the network adapter."},
+        {"label": "No, still broken", "next_id": "step_8", "resolution": null}
+      ]
+    },
+    "step_7": {
+      "id": "step_7",
+      "question": "Try pinging an IP address (8.8.8.8) vs. a hostname (google.com). Do both work?",
+      "note": "This isolates whether it's a DNS problem or a broader connectivity problem.",
+      "options": [
+        {"label": "IP works, hostname fails", "next_id": null, "resolution": "DNS issue — flush DNS (YARI Toolbox → Quick Fixes) and/or check the device's DNS server settings."},
+        {"label": "Neither works", "next_id": "step_8", "resolution": null}
+      ]
+    },
+    "step_8": {
+      "id": "step_8",
+      "question": "This needs escalation — local fixes have been exhausted.",
+      "note": "",
+      "options": [
+        {"label": "Acknowledge and escalate", "next_id": null, "resolution": "Escalate to the network team with: device name, steps already tried, and the time the issue started."}
+      ]
+    }
+  }
+}
