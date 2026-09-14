@@ -1,5 +1,5 @@
 """
-YARI Troubleshoot - Player (v1)
+Longleaf - Player (v1)
 
 The version that ships to field techs: opens a flow file and walks it.
 No editing capability at all — just Play, answer, get a report.
@@ -27,7 +27,7 @@ def _bundled_flow_path() -> str:
 class PlayerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YARI Troubleshoot")
+        self.setWindowTitle("Longleaf")
         self.resize(720, 640)
 
         self.player = PlayerWidget(Tree())
@@ -70,7 +70,7 @@ class PlayerWindow(QMainWindow):
             QMessageBox.critical(self, "Couldn't open flow", str(e))
             return
         self.player.load_tree(tree)
-        self.setWindowTitle(f"YARI Troubleshoot — {tree.title}")
+        self.setWindowTitle(f"Longleaf — {tree.title}")
 
 
 def main():

@@ -1,0 +1,53 @@
+{
+  "title": "Support Ticket Triage",
+  "root_id": "step_1",
+  "steps": {
+    "step_1": {
+      "id": "step_1",
+      "question": "What type of issue is the customer reporting?",
+      "note": "",
+      "options": [
+        {"label": "Billing/payment issue", "next_id": "step_2", "resolution": null},
+        {"label": "Product not working", "next_id": "step_3", "resolution": null},
+        {"label": "Account access issue", "next_id": "step_4", "resolution": null}
+      ]
+    },
+    "step_2": {
+      "id": "step_2",
+      "question": "Is this a failed charge, a disputed charge, or a refund request?",
+      "note": "",
+      "options": [
+        {"label": "Failed charge", "next_id": null, "resolution": "Have the customer verify card details or try an alternate payment method. Check the payment processor's dashboard for the specific decline reason."},
+        {"label": "Disputed charge", "next_id": null, "resolution": "Escalate to the billing team with the transaction ID and the customer's description of the dispute. Do not process a refund without billing sign-off."},
+        {"label": "Refund request", "next_id": null, "resolution": "Check the refund policy window. If within policy, process the refund and confirm the timeline with the customer; if outside policy, offer account credit instead."}
+      ]
+    },
+    "step_3": {
+      "id": "step_3",
+      "question": "Is the product completely unusable, or just partially degraded?",
+      "note": "",
+      "options": [
+        {"label": "Completely unusable", "next_id": null, "resolution": "Treat as high priority. Check the status page for a known outage first; if none, escalate to engineering with reproduction steps."},
+        {"label": "Partially degraded", "next_id": "step_5", "resolution": null}
+      ]
+    },
+    "step_4": {
+      "id": "step_4",
+      "question": "Has the customer forgotten their password, or is the account locked/suspended?",
+      "note": "",
+      "options": [
+        {"label": "Forgotten password", "next_id": null, "resolution": "Send a password reset link to the account's verified email, and confirm the email on file matches what the customer expects."},
+        {"label": "Locked/suspended", "next_id": null, "resolution": "Check the account status flag. If suspended for suspicious activity, follow the account-security escalation process rather than unlocking directly."}
+      ]
+    },
+    "step_5": {
+      "id": "step_5",
+      "question": "Does this happen on all devices/browsers, or just one?",
+      "note": "",
+      "options": [
+        {"label": "All devices/browsers", "next_id": null, "resolution": "Likely a backend/service issue — escalate to engineering with timestamps and affected accounts."},
+        {"label": "Just one device/browser", "next_id": null, "resolution": "Have the customer clear cache, try a different browser, or update the app. Most single-device issues resolve with a fresh install."}
+      ]
+    }
+  }
+}

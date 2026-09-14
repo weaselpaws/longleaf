@@ -1,5 +1,5 @@
 """
-YARI Troubleshoot - shared visual theme.
+Longleaf - shared visual theme.
 
 Same brand as the rest of the YARI toolset (dark charcoal + gold), kept
 in one place so the Player and Editor apps look like one product

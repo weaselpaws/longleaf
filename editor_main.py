@@ -1,5 +1,5 @@
 """
-YARI Troubleshoot - Editor (v1)
+Longleaf - Editor (v1)
 
 The authoring app: build and edit a flow, with a live Test pane wired
 to the same engine the shipped Player uses, so what you test here is
@@ -60,7 +60,7 @@ class EditorWindow(QMainWindow):
     def _update_title(self, dirty: bool):
         name = self.editor.current_path or "Untitled Flow"
         star = " *" if dirty else ""
-        self.setWindowTitle(f"YARI Troubleshoot Editor — {name}{star}")
+        self.setWindowTitle(f"Longleaf Editor — {name}{star}")
 
     def closeEvent(self, event):
         if self.editor._dirty:

@@ -1,7 +1,12 @@
-# YARI Troubleshoot
+# Longleaf
 
-A branching troubleshooting-flow tool, shipped as two separate apps that
-share one engine and one look:
+*A Yellowhammer product.*
+
+A branching decision-flow tool — not just IT troubleshooting; any team
+that walks people through "ask a question, branch on the answer, end at
+an outcome" (support triage, marketing ops, onboarding checklists) can
+build and ship one. Shipped as two separate apps that share one engine
+and one look:
 
 - **Player** (`player_main.py`) — what a field tech runs. Opens a `.json`
   flow file (a `flow.json` bundled next to the exe by default) and walks
@@ -15,16 +20,27 @@ share one engine and one look:
   the live test is currently on.
 
 Both are plain PySide6 desktop apps, packaged independently as Windows
-`.exe` files with PyInstaller, same as the other YARI tools.
+`.exe` files with PyInstaller.
 
 ## Data model (`engine.py`)
 
 A **Tree** is just a title, a starting step id, and a flat dict of
 **Step**s. Each Step has a question and a list of **Option**s; an Option
 either points at another step (`next_id`) or ends the flow right there
-with a `resolution` string. It's plain-old JSON — see `sample_tree.json`
-for a worked example (a network-connectivity flow) — so flows can be
-written, versioned, and reviewed without opening the Editor at all.
+with a `resolution` string. It's plain-old JSON, so flows can be written,
+versioned, and reviewed without opening the Editor at all.
+
+## Example flows (`examples/`)
+
+Three worked examples across different verticals, to show this isn't
+IT-only:
+
+- `it_helpdesk_no_network.json` — network-connectivity troubleshooting
+- `marketing_campaign_blocker.json` — diagnosing why a campaign launch is stuck
+- `customer_support_triage.json` — routing an incoming support ticket
+
+Open any of them in the Editor, or point the Player at one with
+File → Open Flow.
 
 ## Setup
 
@@ -46,8 +62,8 @@ python player_main.py     # playback (looks for flow.json next to it)
 
 ```
 venv\Scripts\activate
-pyinstaller YARI-Troubleshoot-Editor.spec
-pyinstaller YARI-Troubleshoot-Player.spec
+pyinstaller Longleaf-Editor.spec
+pyinstaller Longleaf-Player.spec
 ```
 
 The Player build bundles `flow.json` alongside the exe as its default

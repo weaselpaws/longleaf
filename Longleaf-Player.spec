@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='YARI-Troubleshoot-Player',
+    name='Longleaf-Player',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

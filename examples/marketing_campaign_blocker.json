@@ -1,0 +1,52 @@
+{
+  "title": "Campaign Launch Blocker",
+  "root_id": "step_1",
+  "steps": {
+    "step_1": {
+      "id": "step_1",
+      "question": "What's blocking the campaign from going live?",
+      "note": "",
+      "options": [
+        {"label": "Creative/assets not approved", "next_id": "step_2", "resolution": null},
+        {"label": "Budget not approved", "next_id": "step_3", "resolution": null},
+        {"label": "Tracking/UTM links not set up", "next_id": "step_4", "resolution": null}
+      ]
+    },
+    "step_2": {
+      "id": "step_2",
+      "question": "Is the holdup legal/compliance review, or internal design sign-off?",
+      "note": "",
+      "options": [
+        {"label": "Legal/compliance", "next_id": null, "resolution": "Escalate to legal with the specific asset flagged and the launch deadline. Compliance reviews typically take 2-3 business days — build that into future timelines."},
+        {"label": "Internal design sign-off", "next_id": "step_5", "resolution": null}
+      ]
+    },
+    "step_3": {
+      "id": "step_3",
+      "question": "Is the budget stuck in finance approval, or was it never submitted?",
+      "note": "",
+      "options": [
+        {"label": "Stuck in finance approval", "next_id": null, "resolution": "Check the approval queue/threshold — spend over a certain amount may need a second signoff. Follow up with finance directly, referencing the PO number."},
+        {"label": "Never submitted", "next_id": null, "resolution": "Submit the budget request with the campaign brief attached, flagged as time-sensitive given the launch date."}
+      ]
+    },
+    "step_4": {
+      "id": "step_4",
+      "question": "Are UTM parameters missing, or is the tracking pixel/conversion event not firing?",
+      "note": "",
+      "options": [
+        {"label": "UTM parameters missing", "next_id": null, "resolution": "Generate UTM links using the standard campaign-naming convention and update all outbound links before launch."},
+        {"label": "Tracking pixel/conversion event not firing", "next_id": null, "resolution": "Test the pixel in the ad platform's debugger tool. If it's still not firing, loop in the analytics/dev team before spending any budget."}
+      ]
+    },
+    "step_5": {
+      "id": "step_5",
+      "question": "Has the final version been sent directly to the approver, not just left in a shared drive?",
+      "note": "",
+      "options": [
+        {"label": "Yes, they have it directly", "next_id": null, "resolution": "Follow up directly with the approver with a specific deadline. If there's no response within 24 hours, escalate to their manager."},
+        {"label": "No", "next_id": null, "resolution": "Send the final asset directly to the approver with a clear deadline and a one-line summary of what changed since their last review."}
+      ]
+    }
+  }
+}

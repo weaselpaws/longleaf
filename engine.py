@@ -1,5 +1,5 @@
 """
-YARI Troubleshoot - decision-tree engine (no GUI).
+Longleaf - decision-tree engine (no GUI).
 
 A tree is a flat dict of Steps keyed by id, plus a root_id. Each Step
 has a question and a list of Options; each Option either points at
@@ -223,10 +223,12 @@ class TroubleshootEngine:
             self.current_id = self.tree.root_id
 
     def report_text(self) -> str:
-        lines = [f"YARI Troubleshoot — {self.tree.title}", ""]
+        lines = [f"Longleaf — {self.tree.title}", ""]
         for i, h in enumerate(self.history, 1):
             lines.append(f"{i}. [{h.timestamp}] {h.step_question}")
             lines.append(f"   -> {h.chosen_label}")
         lines.append("")
         lines.append(f"Result: {self.resolution}" if self.resolution else "Result: (in progress)")
+        lines.append("")
+        lines.append("Longleaf — a Yellowhammer product")
         return "\n".join(lines)
