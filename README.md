@@ -1,26 +1,45 @@
 # Longleaf
 
-*A Yellowhammer product.*
+*A Yellowhammer product — internal tooling for a service business.*
 
-A branching decision-flow tool — not just IT troubleshooting; any team
-that walks people through "ask a question, branch on the answer, end at
-an outcome" (support triage, marketing ops, onboarding checklists) can
-build and ship one. Shipped as two separate apps that share one engine
-and one look:
+Longleaf is how Yellowhammer builds and delivers custom decision-flow
+tools for clients: troubleshooting trees, support-ticket triage,
+marketing-ops checklists, onboarding flows — any "ask a question, branch
+on the answer, end at an outcome" process. It is **not** sold as
+standalone software. The service is: Yellowhammer builds a client's flow
+(one-time setup fee, optional ongoing support), and the client receives
+a working Player exe with their flow baked in. They never see or need
+the Editor.
 
-- **Player** (`player_main.py`) — what a field tech runs. Opens a `.json`
-  flow file (a `flow.json` bundled next to the exe by default) and walks
-  it: one question at a time, click an answer, get a final resolution and
-  a copyable/exportable report of the path taken. No editing capability.
-- **Editor** (`editor_main.py`) — what you use to build/maintain flows.
-  Outline of every step on the left, a form to edit the selected step's
-  question/answers/branches in the middle, and a **live Test pane** on the
-  right running the exact same Player widget — so testing a flow while
-  you build it is immediate, and the outline highlights whichever step
-  the live test is currently on.
+Two apps, one engine, one look — but very different distribution:
 
-Both are plain PySide6 desktop apps, packaged independently as Windows
-`.exe` files with PyInstaller.
+- **Player** (`player_main.py`) — what a client receives. Opens a bundled
+  `flow.json` and walks it: one question at a time, click an answer, get
+  a final resolution and a copyable/exportable report. No editing
+  capability, and — see "Editor never ships" below — no code path to any.
+  This is the **only** thing that ever leaves Yellowhammer.
+- **Editor** (`editor_main.py`) — Yellowhammer's internal authoring tool,
+  used to build each client's flow. Outline of every step on the left, a
+  form to edit the selected step's question/answers/branches in the
+  middle, and a **live Test pane** on the right running the exact same
+  Player widget. **Never packaged for or given to a client.**
+
+Both are plain PySide6 desktop apps. Only the Player is ever built for
+distribution — see "Building a client release" below.
+
+## Editor never ships
+
+`player_main.py`'s import graph cannot reach `editor_main.py` or any of
+the editor-only widgets (`widgets/editor_widget.py`,
+`widgets/step_editor.py`, `widgets/option_row.py`) — verified two ways:
+
+1. `build_client_release.py` statically re-checks this before every
+   build and refuses to build if it's ever no longer true.
+2. Confirmed against the actual built exe: PyInstaller's own archive
+   listing (`python -m PyInstaller.utils.cliutils.archive_viewer -r`)
+   contains `engine`, `theme`, `widgets.answer_button`, and
+   `widgets.player_widget` — and nothing matching `editor`, `option_row`,
+   or `step_editor`, anywhere in the bundle, nested PYZ contents included.
 
 ## Data model (`engine.py`)
 
@@ -32,15 +51,16 @@ versioned, and reviewed without opening the Editor at all.
 
 ## Example flows (`examples/`)
 
-Three worked examples across different verticals, to show this isn't
-IT-only:
+Three worked examples across different verticals, used as starting
+points/demos while scoping a client's flow — not shipped to clients
+as-is:
 
 - `it_helpdesk_no_network.json` — network-connectivity troubleshooting
 - `marketing_campaign_blocker.json` — diagnosing why a campaign launch is stuck
 - `customer_support_triage.json` — routing an incoming support ticket
 
-Open any of them in the Editor, or point the Player at one with
-File → Open Flow.
+Open any of them in the Editor, or point a dev build of the Player at
+one with File → Open Flow.
 
 ## Setup
 
@@ -50,22 +70,32 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Run
+## Run (internal use)
 
 ```
 venv\Scripts\activate
-python editor_main.py     # authoring
-python player_main.py     # playback (looks for flow.json next to it)
+python editor_main.py     # build/edit a client's flow
+python player_main.py     # preview it as the client will see it
 ```
 
-## Build a Windows .exe
+## Building a client release
+
+The only supported way to produce something that leaves Yellowhammer:
 
 ```
 venv\Scripts\activate
-pyinstaller Longleaf-Editor.spec
-pyinstaller Longleaf-Player.spec
+python build_client_release.py <client-slug> <version> <path-to-flow.json>
 ```
 
-The Player build bundles `flow.json` alongside the exe as its default
-flow (via the spec's `datas`) — replace that file before building to ship
-a different default, or use File → Open Flow at runtime to load another.
+e.g. `python build_client_release.py acme-hvac 1.0.0 clients\acme-hvac\flow.json`
+produces `dist\Longleaf-Player-acme-hvac-v1.0.0.exe` — the client's flow
+baked in via PyInstaller's `datas`, nothing else. This is a local,
+manual script by design — there's no CI pipeline and no public
+GitHub Release for these; each client's exe is a one-off handed to that
+client directly. See "Editor never ships" above for how the script
+guarantees the Editor can't end up in that exe.
+
+`Longleaf-Editor.spec` and `Longleaf-Player.spec` still exist for quick
+internal dev builds (`pyinstaller Longleaf-Editor.spec`) — the Player
+spec bundles the repo's own `flow.json`, which is dev/test data, not a
+client's. Never distribute a build made from these specs directly.

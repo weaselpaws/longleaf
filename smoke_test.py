@@ -16,6 +16,7 @@ from theme import apply_theme
 from widgets.player_widget import PlayerWidget
 from widgets.editor_widget import EditorWidget
 from widgets.step_editor import StepEditor
+from build_client_release import assert_player_cannot_reach_editor
 
 app = QApplication([])
 apply_theme(app)
@@ -60,5 +61,8 @@ print("StepEditor: loading a step does not corrupt its options")
 editor = EditorWidget(Tree.load("sample_tree.json"))
 assert editor.outline_list.count() == len(tree.steps)
 print("EditorWidget: builds OK")
+
+# --- Player must never be able to reach Editor code (service-model guard) ---
+assert_player_cannot_reach_editor()  # exits the process if this ever fails
 
 print("ALL SMOKE TESTS PASSED")
