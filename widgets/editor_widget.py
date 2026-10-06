@@ -9,17 +9,53 @@ EditorWidget — master-detail authoring UI for a Tree:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog
+    QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog, QDialog, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, Signal
 
-from engine import Tree
-from theme import TEXT_DIM, GOLD
+from engine import Tree, Issue, SEVERITY_ERROR
+from theme import TEXT_DIM, GOLD, GREEN, RED
 from widgets.step_editor import StepEditor
 from widgets.player_widget import PlayerWidget
 
 ROOT_MARK = "★ "
 UNREACHABLE_MARK = "⚠ "
+ERROR_MARK = "✖ "
+SEVERITY_ICON = {"error": "✖", "warning": "⚠"}
+
+
+class ValidationDialog(QDialog):
+    """Lists every issue, errors first. Double-click one to jump to its step."""
+    jump_to_step = Signal(str)
+
+    def __init__(self, issues: list[Issue], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Validate")
+        self.resize(560, 360)
+        layout = QVBoxLayout(self)
+        errors = sum(i.is_error for i in issues)
+        warnings = len(issues) - errors
+        layout.addWidget(QLabel(
+            f"{errors} error{'s' if errors != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}"
+            + (" — errors must be fixed before a client release can be built." if errors else "")
+        ))
+        self.list = QListWidget()
+        for issue in sorted(issues, key=lambda i: not i.is_error):
+            item = QListWidgetItem(f"{SEVERITY_ICON[issue.severity]}  {issue.message}")
+            item.setData(Qt.UserRole, issue.step_id)
+            item.setForeground(Qt.red if issue.is_error else Qt.yellow)
+            self.list.addItem(item)
+        self.list.itemDoubleClicked.connect(self._jump)
+        layout.addWidget(self.list, 1)
+        layout.addWidget(QLabel("Double-click an item to jump to that step."))
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _jump(self, item: QListWidgetItem):
+        sid = item.data(Qt.UserRole)
+        if sid:
+            self.jump_to_step.emit(sid)
 
 
 class EditorWidget(QWidget):
@@ -97,6 +133,20 @@ class EditorWidget(QWidget):
         self.title_input = QLineEdit()
         self.title_input.textChanged.connect(self._on_title_changed)
         title_row.addWidget(self.title_input, 1)
+        title_row.addWidget(QLabel("Client:"))
+        self.client_input = QLineEdit()
+        self.client_input.setPlaceholderText("e.g. acme-hvac")
+        self.client_input.setMaximumWidth(140)
+        self.client_input.textChanged.connect(self._on_meta_changed)
+        title_row.addWidget(self.client_input)
+        title_row.addWidget(QLabel("Version:"))
+        self.version_input = QLineEdit()
+        self.version_input.setPlaceholderText("1.0.0")
+        self.version_input.setMaximumWidth(70)
+        self.version_input.textChanged.connect(self._on_meta_changed)
+        title_row.addWidget(self.version_input)
+        self.status_label = QLabel("")
+        title_row.addWidget(self.status_label)
         validate_btn = QPushButton("Validate")
         validate_btn.clicked.connect(self._run_validate)
         title_row.addWidget(validate_btn)
@@ -155,6 +205,10 @@ class EditorWidget(QWidget):
         self.title_input.blockSignals(True)
         self.title_input.setText(self.tree.title)
         self.title_input.blockSignals(False)
+        for w, text in ((self.client_input, self.tree.client), (self.version_input, self.tree.version)):
+            w.blockSignals(True)
+            w.setText(text)
+            w.blockSignals(False)
         self._refresh_outline()
         self._refresh_test()
 
@@ -163,14 +217,19 @@ class EditorWidget(QWidget):
         if keep_selection and self.outline_list.currentItem():
             selected_id = self.outline_list.currentItem().data(Qt.UserRole)
 
+        issues = self.tree.check()
         unreachable = set(self.tree.steps) - self.tree.reachable_ids()
+        error_steps = {i.step_id for i in issues if i.is_error and i.step_id}
+        self._update_status(issues)
         self.outline_list.blockSignals(True)
         self.outline_list.clear()
         for sid, step in self.tree.steps.items():
             prefix = ""
             if sid == self.tree.root_id:
                 prefix += ROOT_MARK
-            if sid in unreachable:
+            if sid in error_steps:
+                prefix += ERROR_MARK
+            elif sid in unreachable:
                 prefix += UNREACHABLE_MARK
             label = f"{prefix}{step.question[:40] or '(no question)'}"
             item = QListWidgetItem(label)
@@ -198,6 +257,32 @@ class EditorWidget(QWidget):
     def _on_title_changed(self, text):
         self.tree.title = text
         self._mark_dirty(True)
+
+    def _on_meta_changed(self):
+        self.tree.client = self.client_input.text().strip()
+        self.tree.version = self.version_input.text().strip()
+        self._mark_dirty(True)
+
+    def _update_status(self, issues: list[Issue]):
+        errors = sum(i.is_error for i in issues)
+        warnings = len(issues) - errors
+        if not issues:
+            self.status_label.setText("✓ Valid")
+            self.status_label.setStyleSheet(f"color: {GREEN};")
+        else:
+            parts = []
+            if errors:
+                parts.append(f"✖ {errors} error{'s' if errors != 1 else ''}")
+            if warnings:
+                parts.append(f"⚠ {warnings} warning{'s' if warnings != 1 else ''}")
+            self.status_label.setText(" · ".join(parts))
+            self.status_label.setStyleSheet(f"color: {RED if errors else GOLD};")
+
+    def select_step(self, step_id: str):
+        for i in range(self.outline_list.count()):
+            if self.outline_list.item(i).data(Qt.UserRole) == step_id:
+                self.outline_list.setCurrentRow(i)
+                return
 
     def _add_step(self):
         step = self.tree.add_step("New question")
@@ -238,11 +323,13 @@ class EditorWidget(QWidget):
             item.setText(("▶ " if item.data(Qt.UserRole) == step_id else "") + base)
 
     def _run_validate(self):
-        warnings = self.tree.validate()
-        if not warnings:
+        issues = self.tree.check()
+        if not issues:
             QMessageBox.information(self, "Validate", "No issues found — this flow looks complete.")
-        else:
-            QMessageBox.warning(self, "Validate", "\n".join(f"• {w}" for w in warnings))
+            return
+        dlg = ValidationDialog(issues, self)
+        dlg.jump_to_step.connect(self.select_step)
+        dlg.exec()
 
     def _mark_dirty(self, value: bool):
         self._dirty = value

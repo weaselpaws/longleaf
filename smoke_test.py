@@ -47,6 +47,29 @@ player = PlayerWidget(Tree.load("sample_tree.json"))
 assert player.engine.current_step.id == "step_1"
 print("PlayerWidget: builds OK")
 
+# --- Player: finish screen collects ticket/notes and they land in the report ---
+p2 = PlayerWidget(Tree.load("sample_tree.json"))
+p2.operator_input.setText("Sam")
+while not p2.engine.is_finished:
+    p2._choose(p2.engine.current_step.options[0])
+assert not p2.details_widget.isHidden() and not p2.report_box.isHidden()
+p2.ticket_input.setText("INC-42")
+p2.notes_input.setPlainText("swapped the cable")
+rep = p2.report_box.toPlainText()
+assert "INC-42" in rep and "swapped the cable" in rep and "Sam" in rep, rep
+p2.restart()
+assert p2.ticket_input.text() == "" and p2.operator_input.text() == "Sam" and p2.details_widget.isHidden()
+assert p2.engine.operator == "Sam"
+print("PlayerWidget: ticket/operator/notes flow into the report; name survives Start Over")
+
+# --- a broken flow ends visibly, not blank ---
+broken = Tree.load("sample_tree.json")
+broken.steps[broken.root_id].options[0].next_id = "ghost"
+p3 = PlayerWidget(broken)
+p3._choose(broken.steps[broken.root_id].options[0])
+assert p3.engine.outcome == "error" and "ghost" in p3.resolution_label.text()
+print("PlayerWidget: dangling link shows a flow-error result")
+
 # --- StepEditor must NOT corrupt option data on load (regression test) ---
 step6 = tree.steps["step_6"]
 before = [(o.label, o.next_id, o.resolution) for o in step6.options]
@@ -61,6 +84,19 @@ print("StepEditor: loading a step does not corrupt its options")
 editor = EditorWidget(Tree.load("sample_tree.json"))
 assert editor.outline_list.count() == len(tree.steps)
 print("EditorWidget: builds OK")
+
+editor.client_input.setText("acme")
+editor.version_input.setText("1.4.0")
+assert (editor.tree.client, editor.tree.version) == ("acme", "1.4.0")
+assert editor.status_label.text() == "✓ Valid", editor.status_label.text()
+editor.tree.steps["step_1"].options[0].next_id = "ghost"
+editor._refresh_outline()
+assert "error" in editor.status_label.text() and "✖ " in editor.outline_list.item(0).text(), \
+    (editor.status_label.text(), editor.outline_list.item(0).text())
+from widgets.editor_widget import ValidationDialog
+dlg = ValidationDialog(editor.tree.check())
+assert dlg.list.count() == len(editor.tree.check())
+print("EditorWidget: client/version fields, live validation status, validation dialog OK")
 
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
