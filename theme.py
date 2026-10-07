@@ -8,6 +8,8 @@ instead of two separately-styled builds.
 
 from PySide6.QtWidgets import QApplication
 
+from engine import is_hex_color, shade
+
 BG = "#0F0D09"
 PANEL = "#171310"
 FIELD = "#1A1510"
@@ -20,7 +22,27 @@ TEXT_DIM = "#9A9080"
 GREEN = "#5FB865"
 RED = "#D2685A"
 
-QSS = f"""
+DEFAULT_GOLD = GOLD
+
+
+def set_accent(accent: str = ""):
+    """Swap the accent colour (a client's brand colour, "#RRGGBB"), or
+    restore the stock gold with an empty/invalid value. Updates the
+    module colours; widgets that paint themselves read them at paint time."""
+    global GOLD, GOLD_BRIGHT, GOLD_DIM
+    GOLD = accent if is_hex_color(accent) else DEFAULT_GOLD
+    GOLD_BRIGHT = "#E8B84B" if GOLD == DEFAULT_GOLD else shade(GOLD, 0.12)
+    GOLD_DIM = "#9A7620" if GOLD == DEFAULT_GOLD else shade(GOLD, -0.12)
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def make_qss() -> str:
+    """The application stylesheet for the current accent."""
+    return f"""
 QWidget {{
     background-color: {BG};
     color: {TEXT};
@@ -89,11 +111,11 @@ QListWidget::item, QTreeWidget::item {{
     color: {TEXT_DIM};
 }}
 QListWidget::item:selected, QTreeWidget::item:selected {{
-    background-color: rgba(201,149,42,0.18);
+    background-color: {_rgba(GOLD, 0.18)};
     color: {GOLD_BRIGHT};
 }}
 QListWidget::item:hover, QTreeWidget::item:hover {{
-    background-color: rgba(201,149,42,0.08);
+    background-color: {_rgba(GOLD, 0.08)};
 }}
 QPushButton {{
     background-color: {FIELD};
@@ -146,7 +168,7 @@ QMenuBar {{
     border-bottom: 1px solid {BORDER};
 }}
 QMenuBar::item:selected {{
-    background-color: rgba(201,149,42,0.18);
+    background-color: {_rgba(GOLD, 0.18)};
     color: {GOLD_BRIGHT};
 }}
 QMenu {{
@@ -154,7 +176,7 @@ QMenu {{
     border: 1px solid {BORDER};
 }}
 QMenu::item:selected {{
-    background-color: rgba(201,149,42,0.18);
+    background-color: {_rgba(GOLD, 0.18)};
     color: {GOLD_BRIGHT};
 }}
 QStatusBar {{
@@ -165,5 +187,9 @@ QStatusBar {{
 """
 
 
-def apply_theme(app: QApplication):
-    app.setStyleSheet(QSS)
+QSS = make_qss()  # stock look, kept for callers that want the constant
+
+
+def apply_theme(app: QApplication, accent: str = ""):
+    set_accent(accent)
+    app.setStyleSheet(make_qss())

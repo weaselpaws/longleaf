@@ -21,9 +21,14 @@ it has any validation *errors* (warnings are printed but allowed), then
 stamps the release version (and client, if the flow doesn't name one) into
 the bundled copy so exported reports identify the exact build.
 
+Images referenced by the flow (branding logo, step and answer screenshots) are
+looked up relative to the flow file, checked for existence, and bundled next to
+the staged flow.json at the same relative paths.
+
 Also, before every build, this script statically re-checks that player_main.py's
 import graph can't reach editor_main.py or any of the editor-only widgets
-(widgets/editor_widget.py, widgets/step_editor.py, widgets/option_row.py).
+(widgets/editor_widget.py, widgets/step_editor.py, widgets/option_row.py,
+widgets/image_picker.py).
 If that ever becomes false — e.g. someone adds an "Edit" menu item to the
 Player down the road — the build refuses to run rather than silently
 shipping editing capability to a client.
@@ -43,7 +48,7 @@ from engine import FlowFormatError, Tree  # noqa: E402  (GUI-free; not part of t
 
 ROOT = Path(__file__).parent.resolve()
 PLAYER_ENTRY = ROOT / "player_main.py"
-FORBIDDEN_MODULES = {"editor_main", "widgets.editor_widget", "widgets.step_editor", "widgets.option_row"}
+FORBIDDEN_MODULES = {"editor_main", "widgets.editor_widget", "widgets.step_editor", "widgets.option_row", "widgets.image_picker"}
 
 
 def _imported_modules(py_file: Path) -> set[str]:
@@ -101,7 +106,7 @@ def load_and_gate_flow(flow_path: Path) -> dict:
     except (OSError, json.JSONDecodeError, FlowFormatError) as e:
         sys.exit(f"Can't read flow {flow_path}: {e}")
 
-    issues = tree.check()
+    issues = tree.check(base_dir=str(flow_path.parent))
     errors = [i for i in issues if i.is_error]
     for i in issues:
         print(f"  {'ERROR  ' if i.is_error else 'warning'}  {i.message}")
@@ -113,6 +118,20 @@ def load_and_gate_flow(flow_path: Path) -> dict:
     if issues:
         print(f"Proceeding: {len(issues)} warning(s) only.")
     return raw
+
+
+def stage_assets(raw_flow: dict, flow_dir: Path, staging: Path) -> list[tuple[Path, str]]:
+    """Copy every image the flow references into `staging`, keeping its
+    relative path, and return (staged file, bundle folder) pairs for
+    PyInstaller's --add-data. load_and_gate_flow has already verified the
+    paths are relative, inside the flow's folder, and exist."""
+    pairs = []
+    for rel in Tree.from_dict(raw_flow).asset_paths():
+        dest = staging / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(flow_dir / rel, dest)
+        pairs.append((dest, str(Path(rel).parent)))
+    return pairs
 
 
 def build(client: str, version: str, flow_path: Path):
@@ -138,8 +157,11 @@ def build(client: str, version: str, flow_path: Path):
         # the exe, regardless of what the client's source file was called.
         staged_flow = tmp / "flow.json"
         staged_flow.write_text(json.dumps(raw_flow, indent=2), encoding="utf-8")
-
         sep = ";" if sys.platform == "win32" else ":"
+        asset_args = []
+        for staged, bundle_dir in stage_assets(raw_flow, flow_path.parent, tmp):
+            asset_args += ["--add-data", f"{staged}{sep}{bundle_dir}"]
+
         cmd = [
             sys.executable, "-m", "PyInstaller",
             str(PLAYER_ENTRY),
@@ -148,6 +170,7 @@ def build(client: str, version: str, flow_path: Path):
             "--noconsole",
             "--name", exe_name,
             "--add-data", f"{staged_flow}{sep}.",
+            *asset_args,
             "--workpath", str(ROOT / "build"),
             "--specpath", str(tmp),
             "--distpath", str(ROOT / "dist"),

@@ -272,3 +272,99 @@ def test_feedback_is_part_of_record_and_cleared_by_go_back():
     assert e.record().to_dict()["feedback"] == {"helpful": True, "comment": "worked"}
     e.go_back()
     assert e.record().feedback is None
+
+
+# ---------- branding & rich content ----------
+
+from engine import Branding, rich_html, shade  # noqa: E402
+
+
+def test_branding_round_trips_and_is_omitted_when_empty():
+    t = tree_of(Step("a", "Q", [end()]))
+    assert "branding" not in t.to_dict()
+    t.branding = Branding(name="Acme Assist", accent="#3366CC", logo="img/logo.png")
+    again = Tree.from_dict(json.loads(json.dumps(t.to_dict())))
+    assert again.branding == t.branding
+
+
+def test_branding_must_be_an_object():
+    with pytest.raises(FlowFormatError):
+        Tree.from_dict({"branding": "blue", "steps": {}})
+
+
+@pytest.mark.parametrize("accent", ["blue", "#12345", "#GGGGGG", "123456"])
+def test_bad_accent_is_an_error(accent):
+    t = tree_of(Step("a", "Q", [end()]), branding=Branding(accent=accent))
+    assert "BAD_ACCENT" in codes(t)
+
+
+def test_good_accent_is_clean():
+    assert tree_of(Step("a", "Q", [end()]), branding=Branding(accent="#3366cc")).check() == []
+
+
+def test_shade_keeps_hue_and_clamps():
+    assert shade("#C9952A", 1.0) == "#FFFFFF"
+    assert shade("#C9952A", -1.0) == "#000000"
+    assert shade("#808080", 0) == "#808080"
+
+
+def test_images_round_trip_and_are_collected():
+    t = tree_of(Step("a", "Q", [Option("x", "b"), end()], image="shots/a.png"),
+                Step("b", "Q2", [Option("done", None, "ok", image="shots/fixed.png")]),
+                branding=Branding(logo="logo.png"))
+    t.steps["a"].options[1].image = "shots/a.png"   # duplicate on purpose
+    again = Tree.from_dict(json.loads(json.dumps(t.to_dict())))
+    assert again.steps["a"].image == "shots/a.png"
+    assert again.steps["b"].options[0].image == "shots/fixed.png"
+    assert again.asset_paths() == ["logo.png", "shots/a.png", "shots/fixed.png"]
+
+
+@pytest.mark.parametrize("rel", ["/etc/passwd", "C:\\x.png", "\\\\host\\share\\x.png", "../x.png", "a/../../x.png"])
+def test_unsafe_image_paths_are_errors(rel):
+    assert "BAD_IMAGE_PATH" in codes(tree_of(Step("a", "Q", [end()], image=rel)))
+
+
+def test_missing_image_only_checked_with_a_base_dir(tmp_path):
+    t = tree_of(Step("a", "Q", [end()], image="shots/a.png"))
+    assert t.check() == []                       # no folder to look in -> not checked
+    assert "MISSING_IMAGE" in {i.code for i in t.check(str(tmp_path))}
+    (tmp_path / "shots").mkdir()
+    (tmp_path / "shots" / "a.png").write_bytes(b"x")
+    assert t.check(str(tmp_path)) == []
+
+
+def test_resolution_image_follows_the_chosen_ending_and_go_back():
+    t = tree_of(Step("a", "Q", [Option("fix", None, "Fixed", image="f.png"), Option("no", None, "Nope")]))
+    e = TroubleshootEngine(t)
+    e.choose(t.steps["a"].options[0])
+    assert e.resolution_image == "f.png"
+    e.go_back()
+    assert e.resolution_image == ""
+    e.choose(t.steps["a"].options[1])
+    assert e.resolution_image == ""
+
+
+def test_rich_html_escapes_links_and_keeps_line_breaks():
+    out = rich_html("Use <b>this</b> & see https://example.com/help.\nThen retry (https://x.io/a?b=1).")
+    assert "&lt;b&gt;this&lt;/b&gt; &amp;" in out
+    assert '<a href="https://example.com/help">https://example.com/help</a>.<br>' in out
+    assert '(<a href="https://x.io/a?b=1">https://x.io/a?b=1</a>).' in out
+    assert "<b>" not in out
+
+
+def test_rich_html_cannot_inject_through_a_url():
+    # The URL ends at the quote, so the rest stays inert text outside the tag.
+    assert rich_html('go to https://x.io/"onmouseover="alert(1)') == \
+        'go to <a href="https://x.io/">https://x.io/</a>"onmouseover="alert(1)'
+
+
+def test_build_stages_assets_at_their_relative_paths(tmp_path):
+    from build_client_release import stage_assets
+    flow_dir, staging = tmp_path / "flow", tmp_path / "stage"
+    (flow_dir / "shots").mkdir(parents=True)
+    (flow_dir / "shots" / "a.png").write_bytes(b"a")
+    (flow_dir / "logo.png").write_bytes(b"l")
+    t = tree_of(Step("a", "Q", [end()], image="shots/a.png"), branding=Branding(logo="logo.png"))
+    pairs = stage_assets(t.to_dict(), flow_dir, staging)
+    assert sorted((p.relative_to(staging).as_posix(), d) for p, d in pairs) == [("logo.png", "."), ("shots/a.png", "shots")]
+    assert (staging / "shots" / "a.png").read_bytes() == b"a"

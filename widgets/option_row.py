@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal
 
 from engine import Option
+from widgets.image_picker import ImagePicker
 
 END_FLOW = "— End flow here (resolution) —"
 
@@ -18,10 +19,12 @@ class OptionRow(QWidget):
     changed = Signal()
     remove_requested = Signal(object)  # passes self
 
-    def __init__(self, option: Option, step_choices: list[tuple[str, str]], parent=None):
+    def __init__(self, option: Option, step_choices: list[tuple[str, str]],
+                 base_dir_provider=lambda: None, parent=None):
         """step_choices: list of (step_id, display_label) for every OTHER step."""
         super().__init__(parent)
         self.option = option
+        self.base_dir_provider = base_dir_provider
         self._build_ui(step_choices)
         self._load()
 
@@ -56,6 +59,11 @@ class OptionRow(QWidget):
         self.resolution_input.textChanged.connect(self._emit_changed)
         root.addWidget(self.resolution_input)
 
+        self.image_picker = ImagePicker("Screenshot shown with the resolution (optional)",
+                                        base_dir_provider=lambda: self.base_dir_provider())
+        self.image_picker.changed.connect(self._emit_changed)
+        root.addWidget(self.image_picker)
+
     def _load(self):
         # Block signals while seeding these from the model — otherwise each
         # setter fires its changed-handler mid-load (before the other two
@@ -72,6 +80,7 @@ class OptionRow(QWidget):
             else:
                 self.target_combo.setCurrentIndex(0)
             self.resolution_input.setPlainText(self.option.resolution or "")
+            self.image_picker.set_path(self.option.image)
         finally:
             self.label_input.blockSignals(False)
             self.target_combo.blockSignals(False)
@@ -79,7 +88,9 @@ class OptionRow(QWidget):
         self._sync_resolution_visibility()
 
     def _sync_resolution_visibility(self):
-        self.resolution_input.setVisible(self.target_combo.currentData() is None)
+        ends_flow = self.target_combo.currentData() is None
+        self.resolution_input.setVisible(ends_flow)
+        self.image_picker.setVisible(ends_flow)
 
     def _target_changed(self):
         self._sync_resolution_visibility()
@@ -89,4 +100,5 @@ class OptionRow(QWidget):
         self.option.label = self.label_input.text()
         self.option.next_id = self.target_combo.currentData()
         self.option.resolution = self.resolution_input.toPlainText() if self.option.next_id is None else None
+        self.option.image = self.image_picker.path() if self.option.next_id is None else ""
         self.changed.emit()

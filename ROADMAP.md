@@ -15,14 +15,15 @@ Status: ✅ done · 🔜 next · 💤 only if asked / earned
 - Step-ID history, `SessionRecord`, reports as txt / md / html / json, ticket / technician / notes on the Player result screen.
 - Server API mapped out in [`docs/API.md`](docs/API.md) (design only).
 
-## 2. 🔜 Branding and rich step content
+## 2. ✅ Branding and rich step content
 
 Highest perceived value for the least work: the client is paying for "their" tool.
 
-- Per-client branding (logo, accent color, title) in a `branding` block of the flow, applied by `build_client_release.py`. `theme.py` is currently Yellowhammer's look only.
-- Images, links and multi-line text in steps and resolutions. Real troubleshooting flows need screenshots.
+- Per-client branding (name, accent colour, logo) in a `branding` block of the flow, editable in the Editor and applied by the Player.
+- Screenshots on steps and endings (bundled into the exe by `build_client_release.py`), multi-line text, clickable links. See the README's "Branding and rich content".
+- Known gaps: very dark accent colours give low-contrast button text; no image zoom; reports don't include screenshots.
 
-## 3. 🔜 Read-only graph view in the Editor
+## 3. 🔜 Read-only graph view (next) in the Editor
 
 - Auto-laid-out graph of the flow (flows are graphs, not trees — merges and loops must lay out cleanly).
 - Click a node to select that step; highlight the Test pane's current step and path.

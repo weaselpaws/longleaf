@@ -7,14 +7,19 @@ EditorWidget — master-detail authoring UI for a Tree:
           through it so you can see exactly where you are.
 """
 
+import os
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
-    QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog, QDialog, QDialogButtonBox
+    QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog, QDialog, QDialogButtonBox,
+    QFormLayout, QColorDialog
 )
+from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt, Signal
 
-from engine import Tree, Issue, SEVERITY_ERROR
+from engine import Branding, Tree, Issue, SEVERITY_ERROR, is_hex_color
 from theme import TEXT_DIM, GOLD, GREEN, RED
+from widgets.image_picker import ImagePicker
 from widgets.step_editor import StepEditor
 from widgets.player_widget import PlayerWidget
 
@@ -58,6 +63,56 @@ class ValidationDialog(QDialog):
             self.jump_to_step.emit(sid)
 
 
+class BrandingDialog(QDialog):
+    """Edit the client's Player branding: product name, accent colour, logo."""
+
+    def __init__(self, branding: Branding, base_dir_provider, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Client branding")
+        self.resize(460, 0)
+        form = QFormLayout(self)
+        self.name_input = QLineEdit(branding.name)
+        self.name_input.setPlaceholderText("Longleaf")
+        form.addRow("Name:", self.name_input)
+
+        accent_row = QHBoxLayout()
+        self.accent_input = QLineEdit(branding.accent)
+        self.accent_input.setPlaceholderText("#RRGGBB — blank for the Yellowhammer gold")
+        accent_row.addWidget(self.accent_input, 1)
+        pick = QPushButton("Pick…")
+        pick.clicked.connect(self._pick_colour)
+        accent_row.addWidget(pick)
+        form.addRow("Accent colour:", accent_row)
+
+        self.logo_picker = ImagePicker("No logo", base_dir_provider=base_dir_provider)
+        self.logo_picker.set_path(branding.logo)
+        form.addRow("Logo:", self.logo_picker)
+
+        self.problem_label = QLabel("")
+        self.problem_label.setStyleSheet(f"color: {RED};")
+        form.addRow(self.problem_label)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _pick_colour(self):
+        colour = QColorDialog.getColor(QColor(self.accent_input.text() or GOLD), self, "Accent colour")
+        if colour.isValid():
+            self.accent_input.setText(colour.name().upper())
+
+    def _accept(self):
+        accent = self.accent_input.text().strip()
+        if accent and not is_hex_color(accent):
+            self.problem_label.setText("Accent must look like #C9952A (six hex digits), or be blank.")
+            return
+        self.accept()
+
+    def branding(self) -> Branding:
+        return Branding(name=self.name_input.text().strip(), accent=self.accent_input.text().strip(),
+                        logo=self.logo_picker.path())
+
+
 class EditorWidget(QWidget):
     dirty_changed = Signal(bool)
 
@@ -68,6 +123,10 @@ class EditorWidget(QWidget):
         self._dirty = False
         self._build_ui()
         self._reload_all()
+
+    def base_dir(self) -> str | None:
+        """Folder of the saved flow file (where its images live), or None while unsaved."""
+        return os.path.dirname(os.path.abspath(self.current_path)) if self.current_path else None
 
     # ---------- File operations (called by the host window's menu) ----------
 
@@ -110,6 +169,7 @@ class EditorWidget(QWidget):
         self.current_path = path
         self.tree.save(path)
         self._mark_dirty(False)
+        self._refresh_test()   # images now resolve against the new folder
         return True
 
     def _confirm_discard(self) -> bool:
@@ -147,6 +207,9 @@ class EditorWidget(QWidget):
         title_row.addWidget(self.version_input)
         self.status_label = QLabel("")
         title_row.addWidget(self.status_label)
+        branding_btn = QPushButton("Branding…")
+        branding_btn.clicked.connect(self._edit_branding)
+        title_row.addWidget(branding_btn)
         validate_btn = QPushButton("Validate")
         validate_btn.clicked.connect(self._run_validate)
         title_row.addWidget(validate_btn)
@@ -175,6 +238,7 @@ class EditorWidget(QWidget):
         # --- editor pane ---
         self.step_editor = StepEditor()
         self.step_editor.set_all_steps_provider(self._step_choices)
+        self.step_editor.set_base_dir_provider(self.base_dir)
         self.step_editor.changed.connect(self._on_step_edited)
         self.step_editor.set_as_start_requested.connect(self._set_start_step)
         splitter.addWidget(self.step_editor)
@@ -217,7 +281,7 @@ class EditorWidget(QWidget):
         if keep_selection and self.outline_list.currentItem():
             selected_id = self.outline_list.currentItem().data(Qt.UserRole)
 
-        issues = self.tree.check()
+        issues = self.tree.check(self.base_dir())
         unreachable = set(self.tree.steps) - self.tree.reachable_ids()
         error_steps = {i.step_id for i in issues if i.is_error and i.step_id}
         self._update_status(issues)
@@ -314,7 +378,8 @@ class EditorWidget(QWidget):
         self._refresh_outline()
 
     def _refresh_test(self):
-        self.player.load_tree(self.tree)
+        self.player.load_tree(self.tree, base_dir=self.base_dir())
+        self.player.set_logo(self.tree.branding.logo)
 
     def _on_test_step_changed(self, step_id):
         for i in range(self.outline_list.count()):
@@ -322,8 +387,16 @@ class EditorWidget(QWidget):
             base = item.text().replace("▶ ", "", 1)
             item.setText(("▶ " if item.data(Qt.UserRole) == step_id else "") + base)
 
+    def _edit_branding(self):
+        dlg = BrandingDialog(self.tree.branding, self.base_dir, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.tree.branding = dlg.branding()
+            self._mark_dirty(True)
+            self._refresh_outline()
+            self._refresh_test()
+
     def _run_validate(self):
-        issues = self.tree.check()
+        issues = self.tree.check(self.base_dir())
         if not issues:
             QMessageBox.information(self, "Validate", "No issues found — this flow looks complete.")
             return

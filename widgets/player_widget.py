@@ -5,6 +5,7 @@ card with a copyable report. Used standalone by the Player app and
 embedded (as the "Test" pane) by the Editor.
 """
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -15,8 +16,9 @@ from PySide6.QtWidgets import (
     QSizePolicy, QLineEdit, QPlainTextEdit, QMessageBox
 )
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QPixmap
 
-from engine import TroubleshootEngine, Tree, OUTCOME_RESOLVED
+from engine import TroubleshootEngine, Tree, OUTCOME_RESOLVED, rich_html
 from theme import TEXT_DIM, GREEN, RED
 from widgets.answer_button import AnswerButton
 
@@ -29,6 +31,18 @@ EXPORT_FORMATS = [
 ]
 
 
+MAX_IMAGE_HEIGHT = 240
+
+
+def _load_image(base_dir: str | None, rel: str) -> QPixmap | None:
+    """The picture at `rel` (relative to the flow's folder), or None if it
+    isn't there or can't be read — a missing screenshot must never break a flow."""
+    if not rel or base_dir is None:
+        return None
+    pix = QPixmap(os.path.join(base_dir, rel))
+    return None if pix.isNull() else pix
+
+
 class PlayerWidget(QWidget):
     def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None):
         """
@@ -38,12 +52,14 @@ class PlayerWidget(QWidget):
         super().__init__(parent)
         self.on_step_changed = on_step_changed
         self.engine = TroubleshootEngine(tree or Tree())
+        self.base_dir: str | None = None   # folder the flow's image paths are relative to
         self._build_ui()
         self._render()
 
     # ---------- public API (Editor uses these) ----------
 
-    def load_tree(self, tree: Tree):
+    def load_tree(self, tree: Tree, base_dir: str | None = None):
+        self.base_dir = base_dir
         self.engine = TroubleshootEngine(tree)
         self._reset_report_inputs()
         self._render()
@@ -69,9 +85,14 @@ class PlayerWidget(QWidget):
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
 
+        header = QHBoxLayout()
+        self.logo_label = QLabel("")
+        self.logo_label.setVisible(False)
+        header.addWidget(self.logo_label)
         self.breadcrumb = QLabel("")
         self.breadcrumb.setProperty("role", "subheading")
-        root.addWidget(self.breadcrumb)
+        header.addWidget(self.breadcrumb, 1)
+        root.addLayout(header)
 
         self.card = QFrame()
         self.card.setObjectName("card")
@@ -85,13 +106,20 @@ class PlayerWidget(QWidget):
         self.question_label = QLabel("")
         self.question_label.setProperty("role", "heading")
         self.question_label.setWordWrap(True)
+        self._make_rich(self.question_label)
         card_layout.addWidget(self.question_label)
 
         self.note_label = QLabel("")
         self.note_label.setProperty("role", "note")
         self.note_label.setWordWrap(True)
         self.note_label.setVisible(False)
+        self._make_rich(self.note_label)
         card_layout.addWidget(self.note_label)
+
+        self.image_label = QLabel("")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setVisible(False)
+        card_layout.addWidget(self.image_label)
 
         self.answers_layout = QVBoxLayout()
         self.answers_layout.setSpacing(8)
@@ -102,6 +130,7 @@ class PlayerWidget(QWidget):
         self.resolution_label.setWordWrap(True)
         self.resolution_label.setStyleSheet(f"color: {GREEN}; font-size: 16px; font-weight: 600;")
         self.resolution_label.setVisible(False)
+        self._make_rich(self.resolution_label)
         card_layout.addWidget(self.resolution_label)
 
         # report details (hidden until finished) — flow into the report below
@@ -160,6 +189,31 @@ class PlayerWidget(QWidget):
 
     # ---------- rendering ----------
 
+    @staticmethod
+    def _make_rich(label: QLabel):
+        label.setTextFormat(Qt.RichText)
+        label.setOpenExternalLinks(True)
+        label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+
+    def _show_image(self, rel: str):
+        pix = _load_image(self.base_dir, rel)
+        if pix is None:
+            self.image_label.setVisible(False)
+            return
+        if pix.height() > MAX_IMAGE_HEIGHT:
+            pix = pix.scaledToHeight(MAX_IMAGE_HEIGHT, Qt.SmoothTransformation)
+        self.image_label.setPixmap(pix)
+        self.image_label.setVisible(True)
+
+    def set_logo(self, rel: str):
+        """Show the client's logo (relative to the flow's folder) in the header, or hide it."""
+        pix = _load_image(self.base_dir, rel)
+        if pix is None:
+            self.logo_label.setVisible(False)
+            return
+        self.logo_label.setPixmap(pix.scaledToHeight(28, Qt.SmoothTransformation))
+        self.logo_label.setVisible(True)
+
     def _clear_answers(self):
         while self.answers_layout.count():
             item = self.answers_layout.takeAt(0)
@@ -182,7 +236,8 @@ class PlayerWidget(QWidget):
             ok = self.engine.outcome == OUTCOME_RESOLVED
             self.resolution_label.setStyleSheet(
                 f"color: {GREEN if ok else RED}; font-size: 16px; font-weight: 600;")
-            self.resolution_label.setText(("✓  " if ok else "⚠  ") + (self.engine.resolution or ""))
+            self.resolution_label.setText(("✓  " if ok else "⚠  ") + rich_html(self.engine.resolution or ""))
+            self._show_image(self.engine.resolution_image if ok else "")
             self.details_widget.setVisible(True)
             self.report_box.setVisible(True)
             self._refresh_report()
@@ -192,6 +247,7 @@ class PlayerWidget(QWidget):
             self.breadcrumb.setText(f"Step {n + 1}")
             self.question_label.setVisible(True)
             self.resolution_label.setVisible(False)
+            self.image_label.setVisible(False)
             self.details_widget.setVisible(False)
             self.report_box.setVisible(False)
             self.copy_btn.setVisible(False)
@@ -200,9 +256,10 @@ class PlayerWidget(QWidget):
             if step is None:
                 self.question_label.setText("This flow has no steps yet.")
             else:
-                self.question_label.setText(step.question)
+                self.question_label.setText(rich_html(step.question))
+                self._show_image(step.image)
                 if step.note:
-                    self.note_label.setText(step.note)
+                    self.note_label.setText(rich_html(step.note))
                     self.note_label.setVisible(True)
                 else:
                     self.note_label.setVisible(False)

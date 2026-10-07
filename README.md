@@ -31,7 +31,7 @@ distribution — see "Building a client release" below.
 
 `player_main.py`'s import graph cannot reach `editor_main.py` or any of
 the editor-only widgets (`widgets/editor_widget.py`,
-`widgets/step_editor.py`, `widgets/option_row.py`) — verified two ways:
+`widgets/step_editor.py`, `widgets/option_row.py`, `widgets/image_picker.py`) — verified two ways:
 
 1. `build_client_release.py` statically re-checks this before every
    build and refuses to build if it's ever no longer true.
@@ -62,6 +62,30 @@ have a way out, a resolution that's never shown). The Editor shows a live
 error/warning count, marks broken steps in the outline, and its Validate
 dialog jumps to the offending step. `build_client_release.py` refuses to
 build a flow with errors.
+
+### Branding and rich content
+
+A flow can carry a `branding` block — all fields optional — that makes the
+Player look like the client's own tool:
+
+```json
+"branding": {"name": "Acme Assist", "accent": "#3366CC", "logo": "images/logo.png"}
+```
+
+`name` replaces "Longleaf" in the window title, `accent` (`#RRGGBB`) replaces
+the gold (its brighter/dimmer shades are derived from it), and `logo` shows
+in the Player's header. Set it in the Editor via **Branding…**.
+
+Steps take an optional `image` (a screenshot shown under the question), and
+answers that end the flow take one too (shown with the resolution). Question,
+note and resolution text can span several lines, and bare `http(s)://` links
+become clickable; nothing typed is ever interpreted as markup. Image paths are
+relative to the flow file, must stay inside its folder, and are checked by
+validation (`MISSING_IMAGE`, `BAD_IMAGE_PATH`, `BAD_ACCENT`). The Editor's
+image picker copies a file from elsewhere into an `images/` folder beside the
+flow. `build_client_release.py` bundles every referenced image into the exe.
+A screenshot that fails to load at runtime is skipped, never an error screen.
+Reports stay text-only.
 
 ### Session records and reports
 
