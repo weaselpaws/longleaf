@@ -1,5 +1,6 @@
 {
   "title": "Campaign Launch Blocker",
+  "branding": {"name": "Campaign Desk", "accent": "#2E8B8B"},
   "root_id": "step_1",
   "steps": {
     "step_1": {

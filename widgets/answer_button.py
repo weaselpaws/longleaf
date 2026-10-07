@@ -11,7 +11,8 @@ from PySide6.QtWidgets import QPushButton, QSizePolicy
 from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
-from theme import FIELD, BORDER, GOLD, GOLD_BRIGHT, TEXT, BG
+import theme
+from theme import FIELD, BORDER, TEXT, BG
 
 
 def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
@@ -36,9 +37,9 @@ class AnswerButton(QPushButton):
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._base_bg = QColor(FIELD)
-        self._hover_bg = QColor(GOLD) if terminal else QColor(BORDER)
+        self._hover_bg = QColor(theme.GOLD) if terminal else QColor(BORDER)
         self._base_border = QColor(BORDER)
-        self._hover_border = QColor(GOLD)
+        self._hover_border = QColor(theme.GOLD)
 
     def getGlow(self) -> float:
         return self._glow
@@ -78,7 +79,7 @@ class AnswerButton(QPushButton):
         if self.terminal:
             text_color = _lerp_color(QColor(TEXT), QColor(BG), self._glow)
         else:
-            text_color = _lerp_color(QColor(TEXT), QColor(GOLD_BRIGHT), self._glow)
+            text_color = _lerp_color(QColor(TEXT), QColor(theme.GOLD_BRIGHT), self._glow)
         painter.setPen(text_color)
         font = self.font()
         font.setPointSize(11)

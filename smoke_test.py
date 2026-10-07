@@ -98,6 +98,64 @@ dlg = ValidationDialog(editor.tree.check())
 assert dlg.list.count() == len(editor.tree.check())
 print("EditorWidget: client/version fields, live validation status, validation dialog OK")
 
+# --- branding + rich content ---
+import tempfile
+from PySide6.QtGui import QImage, QColor
+import theme
+from engine import Branding, Option, Step
+from widgets.image_picker import relative_asset_path
+from widgets.editor_widget import BrandingDialog
+
+with tempfile.TemporaryDirectory() as d:
+    for name in ("logo.png", "shot.png"):
+        img = QImage(60, 40, QImage.Format_RGB32)
+        img.fill(QColor("#3366CC"))
+        assert img.save(os.path.join(d, name))
+    bt = Tree(title="Acme", root_id="a", branding=Branding(name="Acme Assist", accent="#3366CC", logo="logo.png"),
+              steps={"a": Step("a", "Line one\nSee https://example.com/help", [Option("Fix", None, "Done <b>", image="shot.png")],
+                               image="shot.png", note="hint")})
+    assert bt.check(d) == []
+    pw = PlayerWidget(bt)
+    pw.load_tree(bt, base_dir=d)
+    pw.set_logo(bt.branding.logo)
+    assert not pw.logo_label.isHidden() and not pw.image_label.isHidden()
+    assert 'href="https://example.com/help"' in pw.question_label.text() and "<br>" in pw.question_label.text()
+    pw._choose(bt.steps["a"].options[0])
+    assert not pw.image_label.isHidden() and "&lt;b&gt;" in pw.resolution_label.text()
+    pw.restart()
+    assert not pw.image_label.isHidden()
+    pw.base_dir = os.path.join(d, "nowhere")          # missing image must not break the flow
+    pw.restart()
+    assert pw.image_label.isHidden()
+    apply_theme(app, "#3366CC")
+    assert theme.GOLD == "#3366CC" and "#3366CC" in app.styleSheet() and "201,149,42" not in app.styleSheet()
+    apply_theme(app)
+    assert theme.GOLD == "#C9952A" and "201,149,42" in app.styleSheet()
+
+    elsewhere = tempfile.mkdtemp()
+    open(os.path.join(elsewhere, "x.png"), "wb").write(b"x")
+    assert relative_asset_path(os.path.join(d, "shot.png"), d) == "shot.png"
+    copied = relative_asset_path(os.path.join(elsewhere, "x.png"), d)
+    assert copied == "images/x.png" and os.path.isfile(os.path.join(d, copied))
+    assert relative_asset_path(os.path.join(elsewhere, "x.png"), d) == "images/x.png"   # idempotent
+
+    dlg = BrandingDialog(bt.branding, lambda: d)
+    dlg.accent_input.setText("nope")
+    dlg._accept()
+    assert dlg.result() == 0 and dlg.problem_label.text()
+    dlg.accent_input.setText("#112233")
+    dlg.name_input.setText("  New  ")
+    dlg._accept()
+    assert dlg.branding() == Branding(name="New", accent="#112233", logo="logo.png")
+
+    ed = EditorWidget(bt)
+    ed.current_path = os.path.join(d, "flow.json")
+    ed.step_editor.set_step(bt.steps["a"])
+    ed.step_editor.question_input.setPlainText("Two\nlines")
+    ed.step_editor.image_picker.changed.emit("")
+    assert bt.steps["a"].question == "Two\nlines" and bt.steps["a"].image == ""
+print("branding / images / rich text / image picker / branding dialog OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

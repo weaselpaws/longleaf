@@ -69,8 +69,11 @@ class PlayerWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Couldn't open flow", str(e))
             return
-        self.player.load_tree(tree)
-        self.setWindowTitle(f"Longleaf — {tree.title}")
+        self.player.load_tree(tree, base_dir=os.path.dirname(os.path.abspath(path)))
+        brand = tree.branding
+        apply_theme(QApplication.instance(), brand.accent)   # empty accent -> stock gold
+        self.player.set_logo(brand.logo)
+        self.setWindowTitle(f"{brand.name or 'Longleaf'} — {tree.title}")
 
 
 def main():

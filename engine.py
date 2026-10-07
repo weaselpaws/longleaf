@@ -14,8 +14,11 @@ and render reports (see docs/API.md).
 
 from __future__ import annotations
 
+import colorsys
 import html
 import json
+import os
+import re
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -41,6 +44,7 @@ class Option:
     label: str
     next_id: Optional[str] = None      # set -> advances to that step
     resolution: Optional[str] = None   # set (and next_id None) -> ends the flow here
+    image: str = ""                    # optional screenshot shown with the resolution (path relative to the flow file)
 
     @property
     def is_terminal(self) -> bool:
@@ -53,7 +57,8 @@ class Option:
     def from_dict(d: dict) -> "Option":
         if not isinstance(d, dict) or "label" not in d:
             raise FlowFormatError(f"Answer option is missing a 'label': {d!r}")
-        return Option(label=d["label"], next_id=d.get("next_id") or None, resolution=d.get("resolution"))
+        return Option(label=d["label"], next_id=d.get("next_id") or None, resolution=d.get("resolution"),
+                      image=d.get("image") or "")
 
 
 @dataclass
@@ -62,12 +67,14 @@ class Step:
     question: str
     options: list[Option] = field(default_factory=list)
     note: str = ""  # optional tech-facing hint shown under the question
+    image: str = ""  # optional screenshot shown under the question (path relative to the flow file)
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "question": self.question,
             "note": self.note,
+            "image": self.image,
             "options": [o.to_dict() for o in self.options],
         }
 
@@ -79,8 +86,82 @@ class Step:
             id=d.get("id") or default_id,
             question=d.get("question", ""),
             note=d.get("note", ""),
+            image=d.get("image") or "",
             options=[Option.from_dict(o) for o in d.get("options", [])],
         )
+
+
+# ---------------------------------------------------------------------
+# Branding & rich text
+# ---------------------------------------------------------------------
+
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_URL = re.compile(r"https?://[^\s<>\"']+")
+_URL_TRAILING = ".,;:!?)]}"
+
+
+def is_hex_color(value: str) -> bool:
+    return bool(_HEX_COLOR.match(value or ""))
+
+
+def shade(hex_color: str, lightness_delta: float) -> str:
+    """`hex_color` made lighter (positive) or darker (negative) by a
+    fraction of full lightness, keeping its hue. Used to derive the
+    bright/dim variants of a client's accent colour."""
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    r, g, b = colorsys.hls_to_rgb(h, min(1.0, max(0.0, l + lightness_delta)), s)
+    return "#{:02X}{:02X}{:02X}".format(round(r * 255), round(g * 255), round(b * 255))
+
+
+def rich_html(text: str) -> str:
+    """Plain flow text -> safe HTML for a Qt rich-text label: escaped,
+    line breaks kept, and bare http(s) URLs turned into links. Authors
+    write plain text; nothing they type can inject markup."""
+    def link(m: re.Match) -> str:
+        url = m.group(0)
+        tail = ""
+        while url and url[-1] in _URL_TRAILING:
+            url, tail = url[:-1], url[-1] + tail
+        return f'<a href="{url}">{url}</a>{tail}'
+
+    escaped = html.escape(text or "", quote=False)
+    return _URL.sub(link, escaped).replace("\r\n", "\n").replace("\n", "<br>")
+
+
+@dataclass
+class Branding:
+    """Per-client look for the Player. Every field is optional; an empty
+    Branding means the stock Yellowhammer look."""
+    name: str = ""     # product name shown in the window title and header (default: "Longleaf")
+    accent: str = ""   # "#RRGGBB" replacing the gold accent
+    logo: str = ""     # image path relative to the flow file, shown in the Player header
+
+    def is_empty(self) -> bool:
+        return not (self.name or self.accent or self.logo)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d) -> "Branding":
+        if d is None:
+            return Branding()
+        if not isinstance(d, dict):
+            raise FlowFormatError("'branding' must be an object.")
+        return Branding(name=str(d.get("name") or ""), accent=str(d.get("accent") or ""),
+                        logo=str(d.get("logo") or ""))
+
+
+def asset_path_problem(rel: str) -> Optional[str]:
+    """Why `rel` can't be a bundled asset path, or None if it's fine.
+    Assets are bundled into the exe, so they must live under the flow's folder."""
+    if os.path.isabs(rel) or re.match(r"^[A-Za-z]:", rel) or rel.startswith(("/", "\\")):
+        return "must be relative to the flow file, not an absolute path"
+    parts = re.split(r"[\\/]+", rel)
+    if ".." in parts:
+        return "must not leave the flow file's folder ('..')"
+    return None
 
 
 # ---------------------------------------------------------------------
@@ -120,6 +201,7 @@ class Tree:
     steps: dict[str, Step] = field(default_factory=dict)
     version: str = ""   # flow/release version, stamped into every report
     client: str = ""    # client name or slug, stamped into every report
+    branding: Branding = field(default_factory=Branding)
 
     def to_dict(self) -> dict:
         return {
@@ -127,6 +209,7 @@ class Tree:
             "title": self.title,
             "client": self.client,
             "version": self.version,
+            **({"branding": self.branding.to_dict()} if not self.branding.is_empty() else {}),
             "root_id": self.root_id,
             "steps": {sid: s.to_dict() for sid, s in self.steps.items()},
         }
@@ -144,6 +227,7 @@ class Tree:
             steps={sid: Step.from_dict(s, default_id=sid) for sid, s in raw_steps.items()},
             version=str(d.get("version", "") or ""),
             client=str(d.get("client", "") or ""),
+            branding=Branding.from_dict(d.get("branding")),
         )
 
     def save(self, path: str):
@@ -275,11 +359,24 @@ class Tree:
         out.sort(key=lambda c: order[c[0]])
         return out
 
+    # ---------- bundled assets ----------
+
+    def asset_paths(self) -> list[str]:
+        """Every image path the flow references (logo, step and answer
+        images), de-duplicated, in a stable order."""
+        paths = [self.branding.logo]
+        for s in self.steps.values():
+            paths.append(s.image)
+            paths.extend(o.image for o in s.options)
+        return list(dict.fromkeys(p for p in paths if p))
+
     # ---------- validation ----------
 
-    def check(self) -> list[Issue]:
+    def check(self, base_dir: Optional[str] = None) -> list[Issue]:
         """Every problem found in the flow, structured. Errors mean the
-        flow is broken and shouldn't ship; warnings are probable mistakes."""
+        flow is broken and shouldn't ship; warnings are probable mistakes.
+        With `base_dir` (the flow file's folder) image files are also
+        checked for existence."""
         issues: list[Issue] = []
         add = lambda *a, **k: issues.append(Issue(*a, **k))  # noqa: E731
 
@@ -289,6 +386,16 @@ class Tree:
         root_ok = bool(self.root_id) and self.root_id in self.steps
         if not root_ok:
             add(SEVERITY_ERROR, "NO_START", "No valid starting step is set.", step_id=self.root_id or None)
+
+        if self.branding.accent and not is_hex_color(self.branding.accent):
+            add(SEVERITY_ERROR, "BAD_ACCENT",
+                f"Branding accent '{self.branding.accent}' isn't a #RRGGBB colour.")
+        for rel in self.asset_paths():
+            problem = asset_path_problem(rel)
+            if problem:
+                add(SEVERITY_ERROR, "BAD_IMAGE_PATH", f"Image '{rel}' {problem}.")
+            elif base_dir is not None and not os.path.isfile(os.path.join(base_dir, rel)):
+                add(SEVERITY_ERROR, "MISSING_IMAGE", f"Image '{rel}' was not found next to the flow file.")
 
         reachable = self.reachable_ids()
         can_finish = self.steps_that_can_finish()
@@ -355,8 +462,8 @@ class Tree:
 
         return issues
 
-    def errors(self) -> list[Issue]:
-        return [i for i in self.check() if i.is_error]
+    def errors(self, base_dir: Optional[str] = None) -> list[Issue]:
+        return [i for i in self.check(base_dir) if i.is_error]
 
     def validate(self) -> list[str]:
         """Human-readable messages for every issue; empty list means clean.
@@ -569,6 +676,7 @@ class TroubleshootEngine:
         self.current_id: Optional[str] = None
         self.history: list[HistoryEntry] = []
         self.resolution: Optional[str] = None
+        self.resolution_image: str = ""   # screenshot attached to the ending that was chosen
         self.outcome: str = OUTCOME_IN_PROGRESS
         self.session_id: str = ""
         self.started_at: str = ""
@@ -583,6 +691,7 @@ class TroubleshootEngine:
         self.current_id = self.tree.root_id or None
         self.history = []
         self.resolution = None
+        self.resolution_image = ""
         self.outcome = OUTCOME_IN_PROGRESS
         self.session_id = str(uuid.uuid4())
         self.started_at = _now().isoformat()
@@ -636,6 +745,7 @@ class TroubleshootEngine:
             self.current_id = None
             self.outcome = OUTCOME_RESOLVED
             self.resolution = option.resolution or "(No resolution text was set for this ending.)"
+            self.resolution_image = option.image
             self.finished_at = _now().isoformat()
 
     def can_go_back(self) -> bool:
@@ -648,6 +758,7 @@ class TroubleshootEngine:
         entry = self.history.pop()
         self.current_id = entry.step_id
         self.resolution = None
+        self.resolution_image = ""
         self.outcome = OUTCOME_IN_PROGRESS
         self.finished_at = None
         self.feedback = None
