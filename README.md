@@ -73,6 +73,8 @@ button offers all four). The same record is the payload of the planned
 server API — see [`docs/API.md`](docs/API.md) (a design only; nothing there
 is built).
 
+See [`ROADMAP.md`](ROADMAP.md) for what's done, what's next, and what we've decided not to build.
+
 ## Example flows (`examples/`)
 
 Three worked examples across different verticals, used as starting
