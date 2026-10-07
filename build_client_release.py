@@ -16,7 +16,12 @@ Example:
 Produces:
     dist\\Longleaf-Player-acme-hvac-v1.0.0.exe
 
-Before every build, this script statically re-checks that player_main.py's
+Before every build, this script validates the flow and refuses to build if
+it has any validation *errors* (warnings are printed but allowed), then
+stamps the release version (and client, if the flow doesn't name one) into
+the bundled copy so exported reports identify the exact build.
+
+Also, before every build, this script statically re-checks that player_main.py's
 import graph can't reach editor_main.py or any of the editor-only widgets
 (widgets/editor_widget.py, widgets/step_editor.py, widgets/option_row.py).
 If that ever becomes false — e.g. someone adds an "Edit" menu item to the
@@ -26,11 +31,15 @@ shipping editing capability to a client.
 
 import argparse
 import ast
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+from engine import FlowFormatError, Tree  # noqa: E402  (GUI-free; not part of the Player's import check)
 
 ROOT = Path(__file__).parent.resolve()
 PLAYER_ENTRY = ROOT / "player_main.py"
@@ -83,10 +92,42 @@ def assert_player_cannot_reach_editor():
     print(f"OK: player_main.py's import graph ({len(seen)} local files) does not reach {FORBIDDEN_MODULES}")
 
 
+def load_and_gate_flow(flow_path: Path) -> dict:
+    """Read the flow, refuse to ship it if it has validation errors, and
+    return the raw JSON (kept raw so unknown keys survive being stamped)."""
+    try:
+        raw = json.loads(flow_path.read_text(encoding="utf-8"))
+        tree = Tree.from_dict(raw)
+    except (OSError, json.JSONDecodeError, FlowFormatError) as e:
+        sys.exit(f"Can't read flow {flow_path}: {e}")
+
+    issues = tree.check()
+    errors = [i for i in issues if i.is_error]
+    for i in issues:
+        print(f"  {'ERROR  ' if i.is_error else 'warning'}  {i.message}")
+    if errors:
+        sys.exit(
+            f"REFUSING TO BUILD: {flow_path.name} has {len(errors)} validation error(s) (listed above). "
+            f"Fix them in the Editor — a client would hit these in the field."
+        )
+    if issues:
+        print(f"Proceeding: {len(issues)} warning(s) only.")
+    return raw
+
+
 def build(client: str, version: str, flow_path: Path):
     flow_path = flow_path.resolve()
     if not flow_path.exists():
         sys.exit(f"Flow file not found: {flow_path}")
+
+    raw_flow = load_and_gate_flow(flow_path)
+    # Stamp the release into the bundled copy so every report the client
+    # exports names the exact build. The release version always wins; the
+    # client slug only fills in if the flow doesn't already carry a
+    # friendlier display name.
+    raw_flow["version"] = version
+    if not raw_flow.get("client"):
+        raw_flow["client"] = client
 
     exe_name = f"Longleaf-Player-{client}-v{version}"
     print(f"Building {exe_name}.exe from {flow_path}")
@@ -96,7 +137,7 @@ def build(client: str, version: str, flow_path: Path):
         # player_main.py looks for a file literally named flow.json next to
         # the exe, regardless of what the client's source file was called.
         staged_flow = tmp / "flow.json"
-        shutil.copy(flow_path, staged_flow)
+        staged_flow.write_text(json.dumps(raw_flow, indent=2), encoding="utf-8")
 
         sep = ";" if sys.platform == "win32" else ":"
         cmd = [

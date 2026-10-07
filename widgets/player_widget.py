@@ -5,18 +5,28 @@ card with a copyable report. Used standalone by the Player app and
 embedded (as the "Test" pane) by the Editor.
 """
 
+import re
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGraphicsOpacityEffect, QFrame, QTextEdit, QFileDialog, QApplication,
-    QSizePolicy
+    QSizePolicy, QLineEdit, QPlainTextEdit, QMessageBox
 )
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 
-from engine import TroubleshootEngine, Tree
-from theme import TEXT_DIM, GREEN
+from engine import TroubleshootEngine, Tree, OUTCOME_RESOLVED
+from theme import TEXT_DIM, GREEN, RED
 from widgets.answer_button import AnswerButton
+
+# (file-dialog filter, extension) pairs; extension doubles as the SessionRecord.render() format.
+EXPORT_FORMATS = [
+    ("Text (*.txt)", "txt"),
+    ("Markdown (*.md)", "md"),
+    ("HTML (*.html)", "html"),
+    ("JSON session record (*.json)", "json"),
+]
 
 
 class PlayerWidget(QWidget):
@@ -35,11 +45,22 @@ class PlayerWidget(QWidget):
 
     def load_tree(self, tree: Tree):
         self.engine = TroubleshootEngine(tree)
+        self._reset_report_inputs()
         self._render()
 
     def restart(self):
         self.engine.reset()
+        self._reset_report_inputs()
         self._render()
+
+    def _reset_report_inputs(self):
+        """New session: clear ticket and notes, but keep the tech's name —
+        they're the same person working through the next ticket."""
+        for w in (self.ticket_input, self.notes_input):
+            w.blockSignals(True)
+            w.clear()
+            w.blockSignals(False)
+        self.engine.operator = self.operator_input.text()
 
     # ---------- UI ----------
 
@@ -83,10 +104,34 @@ class PlayerWidget(QWidget):
         self.resolution_label.setVisible(False)
         card_layout.addWidget(self.resolution_label)
 
+        # report details (hidden until finished) — flow into the report below
+        self.details_widget = QWidget()
+        details = QVBoxLayout(self.details_widget)
+        details.setContentsMargins(0, 0, 0, 0)
+        details.setSpacing(6)
+        ids_row = QHBoxLayout()
+        self.ticket_input = QLineEdit()
+        self.ticket_input.setPlaceholderText("Ticket / reference (optional)")
+        self.ticket_input.textChanged.connect(self._on_details_changed)
+        ids_row.addWidget(self.ticket_input)
+        self.operator_input = QLineEdit()
+        self.operator_input.setPlaceholderText("Your name (optional)")
+        self.operator_input.textChanged.connect(self._on_details_changed)
+        ids_row.addWidget(self.operator_input)
+        details.addLayout(ids_row)
+        self.notes_input = QPlainTextEdit()
+        self.notes_input.setPlaceholderText("Notes to include in the report (optional)")
+        self.notes_input.setMaximumHeight(60)
+        self.notes_input.textChanged.connect(self._on_details_changed)
+        details.addWidget(self.notes_input)
+        self.details_widget.setVisible(False)
+        card_layout.addWidget(self.details_widget)
+
         self.report_box = QTextEdit()
         self.report_box.setReadOnly(True)
         self.report_box.setFocusPolicy(Qt.NoFocus)
-        self.report_box.setMaximumHeight(140)
+        self.report_box.setMinimumHeight(170)
+        self.report_box.setMaximumHeight(300)
         self.report_box.setVisible(False)
         card_layout.addWidget(self.report_box)
 
@@ -134,15 +179,20 @@ class PlayerWidget(QWidget):
             self.question_label.setVisible(False)
             self.note_label.setVisible(False)
             self.resolution_label.setVisible(True)
-            self.resolution_label.setText("✓  " + (self.engine.resolution or ""))
+            ok = self.engine.outcome == OUTCOME_RESOLVED
+            self.resolution_label.setStyleSheet(
+                f"color: {GREEN if ok else RED}; font-size: 16px; font-weight: 600;")
+            self.resolution_label.setText(("✓  " if ok else "⚠  ") + (self.engine.resolution or ""))
+            self.details_widget.setVisible(True)
             self.report_box.setVisible(True)
-            self.report_box.setPlainText(self.engine.report_text())
+            self._refresh_report()
             self.copy_btn.setVisible(True)
             self.export_btn.setVisible(True)
         else:
             self.breadcrumb.setText(f"Step {n + 1}")
             self.question_label.setVisible(True)
             self.resolution_label.setVisible(False)
+            self.details_widget.setVisible(False)
             self.report_box.setVisible(False)
             self.copy_btn.setVisible(False)
             self.export_btn.setVisible(False)
@@ -185,13 +235,34 @@ class PlayerWidget(QWidget):
         self.engine.go_back()
         self._render()
 
+    def _on_details_changed(self):
+        self.engine.ticket_ref = self.ticket_input.text().strip()
+        self.engine.operator = self.operator_input.text().strip()
+        self.engine.notes = self.notes_input.toPlainText()
+        if self.engine.is_finished:
+            self._refresh_report()
+
+    def _refresh_report(self):
+        self.report_box.setPlainText(self.engine.report_text())
+
     def _copy_report(self):
         QApplication.clipboard().setText(self.engine.report_text())
 
     def _export_report(self):
-        default_name = f"troubleshoot_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-        path, _ = QFileDialog.getSaveFileName(self, "Save Report", default_name, "Text Files (*.txt)")
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", self.engine.ticket_ref).strip("-")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        default_name = f"longleaf_report_{slug + '_' if slug else ''}{stamp}.txt"
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Save Report", default_name, ";;".join(f for f, _ in EXPORT_FORMATS))
         if not path:
             return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(self.engine.report_text())
+        by_ext = {ext: ext for _, ext in EXPORT_FORMATS}
+        by_filter = dict(EXPORT_FORMATS)
+        fmt = by_ext.get(Path(path).suffix.lstrip(".").lower()) or by_filter.get(chosen, "txt")
+        if not Path(path).suffix:
+            path += "." + fmt
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.engine.record().render(fmt))
+        except OSError as e:
+            QMessageBox.critical(self, "Couldn't save report", str(e))
