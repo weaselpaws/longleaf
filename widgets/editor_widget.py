@@ -12,13 +12,14 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog, QDialog, QDialogButtonBox,
-    QFormLayout, QColorDialog
+    QFormLayout, QColorDialog, QTabWidget
 )
 from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt, Signal
 
 from engine import Branding, Tree, Issue, SEVERITY_ERROR, is_hex_color
 from theme import TEXT_DIM, GOLD, GREEN, RED
+from widgets.graph_view import GraphPanel
 from widgets.image_picker import ImagePicker
 from widgets.step_editor import StepEditor
 from widgets.player_widget import PlayerWidget
@@ -243,7 +244,9 @@ class EditorWidget(QWidget):
         self.step_editor.set_as_start_requested.connect(self._set_start_step)
         splitter.addWidget(self.step_editor)
 
-        # --- test pane ---
+        # --- right pane: live test + graph, as tabs ---
+        self.graph = GraphPanel()
+        self.graph.step_selected.connect(self.select_step)
         test_panel = QWidget()
         test_layout = QVBoxLayout(test_panel)
         test_header = QHBoxLayout()
@@ -255,7 +258,11 @@ class EditorWidget(QWidget):
         test_layout.addLayout(test_header)
         self.player = PlayerWidget(self.tree, on_step_changed=self._on_test_step_changed)
         test_layout.addWidget(self.player, 1)
-        splitter.addWidget(test_panel)
+        self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(test_panel, "Live Test")
+        self.right_tabs.addTab(self.graph, "Graph")
+        self.right_tabs.currentChanged.connect(self._on_right_tab_changed)
+        splitter.addWidget(self.right_tabs)
 
         splitter.setSizes([220, 420, 380])
         root.addWidget(splitter, 1)
@@ -275,6 +282,7 @@ class EditorWidget(QWidget):
             w.blockSignals(False)
         self._refresh_outline()
         self._refresh_test()
+        self.graph.view.fit()
 
     def _refresh_outline(self, keep_selection: bool = True):
         selected_id = None
@@ -285,6 +293,7 @@ class EditorWidget(QWidget):
         unreachable = set(self.tree.steps) - self.tree.reachable_ids()
         error_steps = {i.step_id for i in issues if i.is_error and i.step_id}
         self._update_status(issues)
+        self.graph.view.set_tree(self.tree, issues)
         self.outline_list.blockSignals(True)
         self.outline_list.clear()
         for sid, step in self.tree.steps.items():
@@ -313,6 +322,7 @@ class EditorWidget(QWidget):
         sid = current.data(Qt.UserRole) if current else None
         step = self.tree.steps.get(sid) if sid else None
         self.step_editor.set_step(step)
+        self.graph.view.set_selected(sid)
 
     def _on_step_edited(self):
         self._mark_dirty(True)
@@ -381,7 +391,14 @@ class EditorWidget(QWidget):
         self.player.load_tree(self.tree, base_dir=self.base_dir())
         self.player.set_logo(self.tree.branding.logo)
 
+    def _on_right_tab_changed(self, index):
+        if self.right_tabs.widget(index) is self.graph:
+            self.graph.view.fit()
+
     def _on_test_step_changed(self, step_id):
+        player = getattr(self, "player", None)   # the Player reports its first step while still being constructed
+        path = [(h.step_id, h.option_index) for h in player.engine.history] if player else []
+        self.graph.view.set_progress(step_id, path)
         for i in range(self.outline_list.count()):
             item = self.outline_list.item(i)
             base = item.text().replace("▶ ", "", 1)

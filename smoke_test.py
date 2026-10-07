@@ -10,8 +10,10 @@ import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtWidgets import QGraphicsSceneMouseEvent
 
-from engine import Tree, TroubleshootEngine
+from engine import Option, Tree, TroubleshootEngine
 from theme import apply_theme
 from widgets.player_widget import PlayerWidget
 from widgets.editor_widget import EditorWidget
@@ -155,6 +157,42 @@ with tempfile.TemporaryDirectory() as d:
     ed.step_editor.image_picker.changed.emit("")
     assert bt.steps["a"].question == "Two\nlines" and bt.steps["a"].image == ""
 print("branding / images / rich text / image picker / branding dialog OK")
+
+# --- graph view ---
+from widgets.graph_view import GraphPanel, _Node
+from engine import SEVERITY_ERROR
+gt = Tree.load("examples/it_helpdesk_no_network.json")
+gt.add_step("Orphan")                                   # unreachable + dead end
+gt.steps[gt.root_id].options.append(Option("Weird", "ghost"))   # dangling link
+gp = GraphPanel()
+gp.view.set_tree(gt)
+nodes = [i for i in gp.view.scene().items() if isinstance(i, _Node)]
+steps_drawn = {n.step_id for n in nodes}
+assert set(gt.steps) <= steps_drawn, set(gt.steps) - steps_drawn
+n_endings = sum(1 for s in gt.steps.values() for o in s.options if not o.next_id)
+n_missing = 1
+assert len(nodes) >= len(gt.steps) + n_endings + n_missing, len(nodes)
+tips = " ".join(n.toolTip() for n in nodes)
+assert "doesn't exist" in tips and "Unreachable" in tips
+clicked = []
+gp.step_selected.connect(clicked.append)
+press = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+press.setButton(Qt.LeftButton)
+next(n for n in nodes if n.step_id == gt.root_id and n.toolTip().startswith(gt.root_id)).mousePressEvent(press)
+assert clicked == [gt.root_id], clicked
+gp.view.set_progress(gt.root_id, [(gt.root_id, 0)])     # path highlighting rebuilds without error
+gp.view.set_selected(gt.root_id)
+with tempfile.TemporaryDirectory() as d:
+    png, svg = os.path.join(d, "g.png"), os.path.join(d, "g.svg")
+    assert gp.export_png(png) and gp.export_svg(svg)
+    assert open(png, "rb").read(4) == b"\x89PNG" and b"<svg" in open(svg, "rb").read(2000)
+GraphPanel().view.set_tree(Tree())                      # empty flow is fine
+ge = EditorWidget(Tree.load("sample_tree.json"))
+ge.select_step("step_3")
+assert ge.graph.view.selected_id == "step_3"
+ge._on_test_step_changed("step_2")
+assert ge.graph.view.current_id == "step_2"
+print("graph view: draws steps/endings/missing links, click selects, progress, PNG+SVG export OK")
 
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails

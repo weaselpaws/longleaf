@@ -23,7 +23,7 @@ Highest perceived value for the least work: the client is paying for "their" too
 - Screenshots on steps and endings (bundled into the exe by `build_client_release.py`), multi-line text, clickable links. See the README's "Branding and rich content".
 - Known gaps: very dark accent colours give low-contrast button text; no image zoom; reports don't include screenshots.
 
-## 3. 🔜 Read-only graph view (next) in the Editor
+## 3. ✅ Read-only graph view in the Editor
 
 - Auto-laid-out graph of the flow (flows are graphs, not trees — merges and loops must lay out cleanly).
 - Click a node to select that step; highlight the Test pane's current step and path.
@@ -32,7 +32,9 @@ Highest perceived value for the least work: the client is paying for "their" too
 
 Worth most on flows of roughly 15+ steps; for small flows it is mainly a demo and sign-off tool.
 
-## 4. 🔜 Local feedback capture
+Known gaps: a step with 5+ answers gets crowded edge labels; labels are truncated (full text in the tooltip); very large flows are untested beyond the shipped examples; it is read-only by design (see the editable canvas in section 5).
+
+## 4. 🔜 Local feedback capture (next)
 
 No server. The Player asks "Did this solve it?" with an optional comment, stores records locally, and an Export button produces a file the client sends back. The Editor imports those files and overlays traffic per branch, helpful-rate per ending, and comments pinned to steps. The record shape already exists (`SessionRecord.feedback`, `engine.set_feedback()`).
 

@@ -31,7 +31,7 @@ distribution — see "Building a client release" below.
 
 `player_main.py`'s import graph cannot reach `editor_main.py` or any of
 the editor-only widgets (`widgets/editor_widget.py`,
-`widgets/step_editor.py`, `widgets/option_row.py`, `widgets/image_picker.py`) — verified two ways:
+`widgets/step_editor.py`, `widgets/option_row.py`, `widgets/image_picker.py`, `widgets/graph_view.py`, `graph_layout.py`) — verified two ways:
 
 1. `build_client_release.py` statically re-checks this before every
    build and refuses to build if it's ever no longer true.
@@ -98,6 +98,19 @@ server API — see [`docs/API.md`](docs/API.md) (a design only; nothing there
 is built).
 
 See [`ROADMAP.md`](ROADMAP.md) for what's done, what's next, and what we've decided not to build.
+
+## Graph view (Editor)
+
+The Editor's right pane has a **Graph** tab beside Live Test: an auto-laid-out,
+read-only picture of the flow. Steps are boxes, answers are labelled arrows,
+endings are green pills, and a link to a missing step is a red dashed pill.
+Click a step to select it in the outline. It also shows validation (red/amber
+outlines, dashed + dimmed unreachable steps), the Test pane's current step and
+the path taken so far (gold), and exports the whole graph as PNG or SVG for
+client sign-off. Ctrl+wheel zooms; drag pans. Layout is a small layered
+(Sugiyama-style) algorithm in `graph_layout.py` — GUI-free and unit-tested —
+that handles merges and loops: loops are drawn underneath and never stretch
+the layout.
 
 ## Example flows (`examples/`)
 
