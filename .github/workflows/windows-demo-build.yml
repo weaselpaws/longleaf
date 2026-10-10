@@ -1,0 +1,25 @@
+name: Windows demo build
+
+# Builds a branded demo Player exe (logo, step + shared-resolution screenshots)
+# on Windows so it can be downloaded and tried by hand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/windows-demo-build]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests -q
+      - run: python scripts/make_demo_flow.py demo
+      - run: python build_client_release.py demo 0.0.1 demo/flow.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Longleaf-Player-demo-windows
+          path: dist/Longleaf-Player-demo-v0.0.1.exe
