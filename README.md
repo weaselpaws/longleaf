@@ -112,6 +112,23 @@ is built).
 
 See [`ROADMAP.md`](ROADMAP.md) for what's done, what's next, and what we've decided not to build.
 
+## Undo and crash recovery (Editor)
+
+**Edit → Undo / Redo** (Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z) covers every edit to the
+flow — typing, adding or deleting steps and answers, start step, branding — as
+one history. It works while the cursor is in a text box, and a burst of typing
+in one place is one step. Undo stays available after a save, and undoing back to
+the saved state clears the unsaved mark. History is cleared on New/Open.
+(`undo_stack.py`, GUI-free.)
+
+While there are unsaved changes the Editor writes a recovery copy two seconds
+after the last edit, to `editor-autosave/` under the app-data folder
+(`LONGLEAF_DATA_DIR` overrides, as for the Player). The flow file itself is
+never touched. Saving, or closing and choosing Save/Discard, deletes the copy;
+anything still there at the next launch means the Editor died, and it offers to
+recover it. Image files you picked are already copied into `images/`, so they
+survive a crash. (`autosave.py`, GUI-free.)
+
 ## Graph view (Editor)
 
 The Editor's right pane has a **Graph** tab beside Live Test: an auto-laid-out,
