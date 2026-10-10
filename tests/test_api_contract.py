@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from engine import Issue, Option, SessionRecord, Step, Tree, TroubleshootEngine  # noqa: E402
+from engine import (  # noqa: E402
+    Article, Issue, Option, Resolution, SessionRecord, Step, Tree, TroubleshootEngine,
+)
 
 DOC = (ROOT / "docs" / "API.md").read_text(encoding="utf-8")
 
@@ -53,6 +55,13 @@ def test_every_documented_issue_code_exists_and_vice_versa():
                                               "b": Step("b", "B", [Option("r", "a"), Option("e", None, "x")])})
     emitted |= {i.code for i in t2.check()}
     emitted |= {i.code for i in Tree(title="T", root_id="nope", steps=t2.steps).check()}
+    # Shared resolutions and KB articles.
+    t3 = Tree(title="T", root_id="a", steps={
+        "a": Step("a", "A", [Option("x", None, resolution_id="ghost"), Option("y", None, resolution_id="empty")],
+                  articles=["no_such_article"])},
+        resolutions={"empty": Resolution("empty", " "), "unused": Resolution("unused", "t")},
+        articles={"blank": Article("blank", ""), "unused": Article("unused", "t")})
+    emitted |= {i.code for i in t3.check()}
     assert emitted == documented, (emitted ^ documented)
 
 

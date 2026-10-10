@@ -3,7 +3,10 @@ Longleaf - decision-tree engine (no GUI).
 
 A tree is a flat dict of Steps keyed by id, plus a root_id. Each Step
 has a question and a list of Options; each Option either points at
-another step (`next_id`) or ends the flow with a `resolution` note.
+another step (`next_id`) or ends the flow, with an inline `resolution`
+note or by pointing at a shared Resolution (`resolution_id`) so several
+paths can finish at the same ending. KB Articles are referenced by id
+from steps and resolutions.
 
 Kept deliberately dumb and GUI-free: the Player and Editor both wrap
 this same engine, and it's also the thing that gets serialized to/from
@@ -34,6 +37,12 @@ OUTCOME_RESOLVED = "resolved"
 OUTCOME_IN_PROGRESS = "in_progress"
 OUTCOME_ERROR = "error"      # the flow itself is broken (e.g. an answer points at a missing step)
 
+# What a tech did with a KB article during a session.
+ARTICLE_READ = "read"              # opened it for clarity / adjacent info
+ARTICLE_ATTACH = "attach"          # attached it to the ticket
+ARTICLE_RESOLUTION = "resolution"  # used it as the resolution (ends the flow)
+ARTICLE_ACTIONS = (ARTICLE_READ, ARTICLE_ATTACH, ARTICLE_RESOLUTION)
+
 
 class FlowFormatError(ValueError):
     """A flow file couldn't be understood at all (as opposed to merely failing validation)."""
@@ -45,20 +54,24 @@ class Option:
     next_id: Optional[str] = None      # set -> advances to that step
     resolution: Optional[str] = None   # set (and next_id None) -> ends the flow here
     image: str = ""                    # optional screenshot shown with the resolution (path relative to the flow file)
+    resolution_id: Optional[str] = None  # set (and next_id None) -> ends at that shared Resolution; inline text is ignored
 
     @property
     def is_terminal(self) -> bool:
         return not self.next_id
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not d["resolution_id"]:   # omitted when unused so existing flow files don't change
+            del d["resolution_id"]
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> "Option":
         if not isinstance(d, dict) or "label" not in d:
             raise FlowFormatError(f"Answer option is missing a 'label': {d!r}")
         return Option(label=d["label"], next_id=d.get("next_id") or None, resolution=d.get("resolution"),
-                      image=d.get("image") or "")
+                      image=d.get("image") or "", resolution_id=d.get("resolution_id") or None)
 
 
 @dataclass
@@ -68,6 +81,7 @@ class Step:
     options: list[Option] = field(default_factory=list)
     note: str = ""  # optional tech-facing hint shown under the question
     image: str = ""  # optional screenshot shown under the question (path relative to the flow file)
+    articles: list[str] = field(default_factory=list)  # KB article ids offered while on this step
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +90,7 @@ class Step:
             "note": self.note,
             "image": self.image,
             "options": [o.to_dict() for o in self.options],
+            **({"articles": list(self.articles)} if self.articles else {}),
         }
 
     @staticmethod
@@ -88,7 +103,72 @@ class Step:
             note=d.get("note", ""),
             image=d.get("image") or "",
             options=[Option.from_dict(o) for o in d.get("options", [])],
+            articles=_id_list(d.get("articles"), f"Step '{d.get('id') or default_id}' articles"),
         )
+
+
+def _id_list(raw, what: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise FlowFormatError(f"{what} must be a list of ids.")
+    return list(dict.fromkeys(raw))
+
+
+@dataclass
+class Article:
+    """A knowledge-base article a tech can read, attach to the ticket, or use
+    as the resolution. Lives once in the flow's `articles` dict and is
+    referenced by id, so editing it updates every step that offers it."""
+    id: str
+    title: str
+    body: str = ""   # plain text shown when read
+    url: str = ""    # optional link to the article's home (the client's real KB)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict, default_id: str = "") -> "Article":
+        if not isinstance(d, dict):
+            raise FlowFormatError(f"Article '{default_id}' is not an object.")
+        return Article(id=d.get("id") or default_id, title=d.get("title", ""),
+                       body=d.get("body", ""), url=d.get("url", ""))
+
+    def as_resolution_text(self) -> str:
+        return f"KB article: {self.title}" + (f" ({self.url})" if self.url else "")
+
+
+@dataclass
+class Resolution:
+    """A shared ending. Any number of answers can point at it by
+    `resolution_id`, so the text/screenshot lives in one place and analytics
+    can tell which ending a session reached no matter which path led there."""
+    id: str
+    text: str
+    image: str = ""
+    articles: list[str] = field(default_factory=list)  # KB article ids offered with this ending
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "text": self.text, "image": self.image,
+                **({"articles": list(self.articles)} if self.articles else {})}
+
+    @staticmethod
+    def from_dict(d: dict, default_id: str = "") -> "Resolution":
+        if not isinstance(d, dict):
+            raise FlowFormatError(f"Resolution '{default_id}' is not an object.")
+        rid = d.get("id") or default_id
+        return Resolution(id=rid, text=d.get("text", ""), image=d.get("image") or "",
+                          articles=_id_list(d.get("articles"), f"Resolution '{rid}' articles"))
+
+
+@dataclass(frozen=True)
+class Ending:
+    """What an ending answer resolves to, whether inline or shared."""
+    text: str
+    image: str = ""
+    resolution_id: Optional[str] = None
+    articles: tuple = ()
 
 
 # ---------------------------------------------------------------------
@@ -202,6 +282,8 @@ class Tree:
     version: str = ""   # flow/release version, stamped into every report
     client: str = ""    # client name or slug, stamped into every report
     branding: Branding = field(default_factory=Branding)
+    resolutions: dict[str, Resolution] = field(default_factory=dict)   # shared endings, by id
+    articles: dict[str, Article] = field(default_factory=dict)         # KB articles, by id
 
     def to_dict(self) -> dict:
         return {
@@ -212,6 +294,8 @@ class Tree:
             **({"branding": self.branding.to_dict()} if not self.branding.is_empty() else {}),
             "root_id": self.root_id,
             "steps": {sid: s.to_dict() for sid, s in self.steps.items()},
+            **({"resolutions": {rid: r.to_dict() for rid, r in self.resolutions.items()}} if self.resolutions else {}),
+            **({"articles": {aid: a.to_dict() for aid, a in self.articles.items()}} if self.articles else {}),
         }
 
     @staticmethod
@@ -221,6 +305,12 @@ class Tree:
         raw_steps = d.get("steps", {})
         if not isinstance(raw_steps, dict):
             raise FlowFormatError("'steps' must be an object keyed by step id.")
+        raw_res = d.get("resolutions") or {}
+        if not isinstance(raw_res, dict):
+            raise FlowFormatError("'resolutions' must be an object keyed by resolution id.")
+        raw_art = d.get("articles") or {}
+        if not isinstance(raw_art, dict):
+            raise FlowFormatError("'articles' must be an object keyed by article id.")
         return Tree(
             title=d.get("title", "Untitled Flow"),
             root_id=d.get("root_id", ""),
@@ -228,6 +318,8 @@ class Tree:
             version=str(d.get("version", "") or ""),
             client=str(d.get("client", "") or ""),
             branding=Branding.from_dict(d.get("branding")),
+            resolutions={rid: Resolution.from_dict(r, default_id=rid) for rid, r in raw_res.items()},
+            articles={aid: Article.from_dict(a, default_id=aid) for aid, a in raw_art.items()},
         )
 
     def save(self, path: str):
@@ -266,6 +358,48 @@ class Tree:
                     o.next_id = None
         if self.root_id == step_id:
             self.root_id = next(iter(self.steps), "")
+
+    def _new_id(self, prefix: str, existing) -> str:
+        n = 1
+        while f"{prefix}{n}" in existing:
+            n += 1
+        return f"{prefix}{n}"
+
+    def add_resolution(self, text: str = "") -> Resolution:
+        res = Resolution(id=self._new_id("res_", self.resolutions), text=text)
+        self.resolutions[res.id] = res
+        return res
+
+    def delete_resolution(self, resolution_id: str):
+        """Remove a shared ending; answers that pointed at it are left with no ending (validation flags them)."""
+        self.resolutions.pop(resolution_id, None)
+        for s in self.steps.values():
+            for o in s.options:
+                if o.resolution_id == resolution_id:
+                    o.resolution_id = None
+
+    def add_article(self, title: str = "New article") -> Article:
+        art = Article(id=self._new_id("kb_", self.articles), title=title)
+        self.articles[art.id] = art
+        return art
+
+    def delete_article(self, article_id: str):
+        self.articles.pop(article_id, None)
+        for holder in (*self.steps.values(), *self.resolutions.values()):
+            holder.articles = [a for a in holder.articles if a != article_id]
+
+    def ending_for(self, option: Option) -> Optional[Ending]:
+        """What an ending answer resolves to: the shared Resolution it points at,
+        else its own inline text. None only when it points at a shared Resolution
+        that doesn't exist (an authoring error). A shared Resolution's text wins;
+        its screenshot wins too, with the answer's own as a fallback."""
+        if option.resolution_id:
+            res = self.resolutions.get(option.resolution_id)
+            if res is None:
+                return None
+            return Ending(text=res.text, image=res.image or option.image,
+                          resolution_id=res.id, articles=tuple(res.articles))
+        return Ending(text=option.resolution or "", image=option.image)
 
     # ---------- graph analysis ----------
 
@@ -368,6 +502,7 @@ class Tree:
         for s in self.steps.values():
             paths.append(s.image)
             paths.extend(o.image for o in s.options)
+        paths.extend(r.image for r in self.resolutions.values())
         return list(dict.fromkeys(p for p in paths if p))
 
     # ---------- validation ----------
@@ -433,10 +568,20 @@ class Tree:
                         add(SEVERITY_WARNING, "SELF_LINK",
                             f"'{sid}' option '{shown}' leads back to the same step.",
                             step_id=sid, option_index=i)
-                    if (o.resolution or "").strip():
+                    if (o.resolution or "").strip() or o.resolution_id:
                         add(SEVERITY_WARNING, "IGNORED_RESOLUTION",
                             f"'{sid}' option '{shown}' has both a next step and a resolution — "
                             f"the resolution will never be shown.", step_id=sid, option_index=i)
+                elif o.resolution_id:
+                    if o.resolution_id not in self.resolutions:
+                        add(SEVERITY_ERROR, "MISSING_RESOLUTION",
+                            f"'{sid}' option '{shown}' points at a missing shared resolution ('{o.resolution_id}').",
+                            step_id=sid, option_index=i)
+                    elif (o.resolution or "").strip():
+                        add(SEVERITY_WARNING, "IGNORED_RESOLUTION",
+                            f"'{sid}' option '{shown}' has its own resolution text as well as a shared "
+                            f"resolution ('{o.resolution_id}') — the shared one is shown instead.",
+                            step_id=sid, option_index=i)
                 elif not (o.resolution or "").strip():
                     add(SEVERITY_ERROR, "NO_RESOLUTION",
                         f"'{sid}' option '{shown}' ends the flow but has no resolution text.",
@@ -452,6 +597,35 @@ class Tree:
         for sid in self.steps:
             if sid not in reachable and root_ok:
                 add(SEVERITY_WARNING, "UNREACHABLE", f"'{sid}' is unreachable from the start step.", step_id=sid)
+
+        # Shared resolutions and KB articles.
+        used_resolutions = {o.resolution_id for s in self.steps.values() for o in s.options if o.resolution_id}
+        for rid, res in self.resolutions.items():
+            if res.id != rid:
+                add(SEVERITY_ERROR, "ID_MISMATCH",
+                    f"Resolution '{rid}' is stored under a different id than its own ('{res.id}').")
+            if not res.text.strip():
+                add(SEVERITY_ERROR, "EMPTY_RESOLUTION", f"Shared resolution '{rid}' has no text.")
+            if rid not in used_resolutions:
+                add(SEVERITY_WARNING, "UNUSED_RESOLUTION", f"Shared resolution '{rid}' isn't used by any answer.")
+
+        referenced_articles: set[str] = set()
+        holders = [(f"'{sid}'", sid, s.articles) for sid, s in self.steps.items()]
+        holders += [(f"Resolution '{rid}'", None, r.articles) for rid, r in self.resolutions.items()]
+        for who, step_id, ids in holders:
+            for aid in ids:
+                referenced_articles.add(aid)
+                if aid not in self.articles:
+                    add(SEVERITY_ERROR, "MISSING_ARTICLE",
+                        f"{who} offers a KB article that doesn't exist ('{aid}').", step_id=step_id)
+        for aid, art in self.articles.items():
+            if art.id != aid:
+                add(SEVERITY_ERROR, "ID_MISMATCH",
+                    f"Article '{aid}' is stored under a different id than its own ('{art.id}').")
+            if not art.title.strip():
+                add(SEVERITY_ERROR, "EMPTY_ARTICLE", f"KB article '{aid}' has no title.")
+            if aid not in referenced_articles:
+                add(SEVERITY_WARNING, "UNUSED_ARTICLE", f"KB article '{aid}' isn't offered by any step or resolution.")
 
         for comp in self.cycles():
             # A loop is fine if there's a way out; NO_EXIT already covers the trapped case.
@@ -523,6 +697,24 @@ class HistoryEntry:
 
 
 @dataclass
+class ArticleEvent:
+    """A tech's action on a KB article during a session. The title is kept
+    alongside the id so reports stay readable, like step/question text."""
+    article_id: str
+    action: str   # one of ARTICLE_ACTIONS
+    at: str       # ISO-8601 with UTC offset
+    title: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "ArticleEvent":
+        return ArticleEvent(article_id=d["article_id"], action=d.get("action", ARTICLE_READ),
+                            at=d.get("at", ""), title=d.get("title", ""))
+
+
+@dataclass
 class SessionRecord:
     """A finished (or in-progress) pass through a flow, as plain data.
 
@@ -545,6 +737,8 @@ class SessionRecord:
     operator: str = ""
     notes: str = ""
     feedback: Optional[dict] = None   # {"helpful": bool | None, "comment": str} — reserved, see docs/API.md
+    resolution_id: Optional[str] = None   # the shared Resolution reached, if the ending was one
+    articles: list[ArticleEvent] = field(default_factory=list)   # KB articles read / attached / used
     schema_version: int = SCHEMA_VERSION
 
     # ---- serialization ----
@@ -562,6 +756,8 @@ class SessionRecord:
             "operator": self.operator,
             "notes": self.notes,
             "feedback": self.feedback,
+            "resolution_id": self.resolution_id,
+            "articles": [a.to_dict() for a in self.articles],
             "history": [h.to_dict() for h in self.history],
         }
 
@@ -582,6 +778,8 @@ class SessionRecord:
             operator=d.get("operator", ""),
             notes=d.get("notes", ""),
             feedback=d.get("feedback"),
+            resolution_id=d.get("resolution_id"),
+            articles=[ArticleEvent.from_dict(a) for a in d.get("articles", [])],
             schema_version=d.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -603,6 +801,7 @@ class SessionRecord:
             ("Client", self.flow_client),
             ("Ticket", self.ticket_ref),
             ("Technician", self.operator),
+            ("KB attached", "; ".join(a.title or a.article_id for a in self.articles if a.action == ARTICLE_ATTACH)),
             ("Started", _fmt_stamp(self.started_at)),
             ("Duration", _fmt_duration(self.started_at, self.finished_at)),
             ("Session", self.session_id[:8]),
@@ -677,6 +876,9 @@ class TroubleshootEngine:
         self.history: list[HistoryEntry] = []
         self.resolution: Optional[str] = None
         self.resolution_image: str = ""   # screenshot attached to the ending that was chosen
+        self.resolution_id: Optional[str] = None   # shared Resolution reached, if any
+        self.resolution_articles: list[str] = []   # KB article ids offered with that ending
+        self.article_events: list[ArticleEvent] = []
         self.outcome: str = OUTCOME_IN_PROGRESS
         self.session_id: str = ""
         self.started_at: str = ""
@@ -692,6 +894,9 @@ class TroubleshootEngine:
         self.history = []
         self.resolution = None
         self.resolution_image = ""
+        self.resolution_id = None
+        self.resolution_articles = []
+        self.article_events = []
         self.outcome = OUTCOME_IN_PROGRESS
         self.session_id = str(uuid.uuid4())
         self.started_at = _now().isoformat()
@@ -742,11 +947,22 @@ class TroubleshootEngine:
             )
             self.finished_at = _now().isoformat()
         else:
+            ending = self.tree.ending_for(option)
             self.current_id = None
-            self.outcome = OUTCOME_RESOLVED
-            self.resolution = option.resolution or "(No resolution text was set for this ending.)"
-            self.resolution_image = option.image
             self.finished_at = _now().isoformat()
+            if ending is None:
+                # Authoring error: the answer links to a shared resolution that doesn't exist.
+                self.outcome = OUTCOME_ERROR
+                self.resolution = (
+                    f"This answer leads to a shared resolution that doesn't exist ('{option.resolution_id}'). "
+                    f"Please report this flow error to whoever maintains it."
+                )
+            else:
+                self.outcome = OUTCOME_RESOLVED
+                self.resolution = ending.text or "(No resolution text was set for this ending.)"
+                self.resolution_image = ending.image
+                self.resolution_id = ending.resolution_id
+                self.resolution_articles = list(ending.articles)
 
     def can_go_back(self) -> bool:
         return len(self.history) > 0
@@ -759,9 +975,52 @@ class TroubleshootEngine:
         self.current_id = entry.step_id
         self.resolution = None
         self.resolution_image = ""
+        self.resolution_id = None
+        self.resolution_articles = []
+        # Reads and attachments belong to the ticket, not the path; only "used as the resolution" is undone.
+        self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
         self.outcome = OUTCOME_IN_PROGRESS
         self.finished_at = None
         self.feedback = None
+
+    # ---------- KB articles ----------
+
+    def articles_here(self) -> list[Article]:
+        """KB articles on offer right now: the ending's, once finished, else the current step's.
+        Ids that don't exist are skipped (validation reports them)."""
+        ids = self.resolution_articles if self.resolution is not None else (
+            self.current_step.articles if self.current_step else [])
+        return [self.tree.articles[a] for a in ids if a in self.tree.articles]
+
+    def record_article(self, article_id: str, action: str) -> Article:
+        """Log a tech reading or attaching an article. Attaching twice is a no-op.
+        (Using an article as the resolution is use_article_as_resolution().)"""
+        if action not in (ARTICLE_READ, ARTICLE_ATTACH):
+            raise ValueError(f"Unknown article action {action!r}; use {ARTICLE_READ!r} or {ARTICLE_ATTACH!r}.")
+        art = self.tree.articles.get(article_id)
+        if art is None:
+            raise ValueError(f"No KB article {article_id!r} in this flow.")
+        if not (action == ARTICLE_ATTACH and any(
+                e.article_id == article_id and e.action == ARTICLE_ATTACH for e in self.article_events)):
+            self.article_events.append(ArticleEvent(article_id, action, _now().isoformat(), art.title))
+        return art
+
+    def use_article_as_resolution(self, article_id: str) -> Article:
+        """Finish the session with a KB article as the answer instead of an ending."""
+        art = self.tree.articles.get(article_id)
+        if art is None:
+            raise ValueError(f"No KB article {article_id!r} in this flow.")
+        now = _now().isoformat()
+        self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
+        self.article_events.append(ArticleEvent(article_id, ARTICLE_RESOLUTION, now, art.title))
+        self.current_id = None
+        self.outcome = OUTCOME_RESOLVED
+        self.resolution = art.as_resolution_text()
+        self.resolution_image = ""
+        self.resolution_id = None
+        self.resolution_articles = []
+        self.finished_at = now
+        return art
 
     def set_feedback(self, helpful: Optional[bool], comment: str = ""):
         """Record the tech's rating of this ending. Not wired to any UI yet;
@@ -783,6 +1042,8 @@ class TroubleshootEngine:
             operator=self.operator,
             notes=self.notes,
             feedback=self.feedback,
+            resolution_id=self.resolution_id,
+            articles=list(self.article_events),
         )
 
     def report_text(self) -> str:

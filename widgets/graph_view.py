@@ -32,7 +32,7 @@ from PySide6.QtGui import (
 
 import theme
 from engine import Tree, SEVERITY_ERROR
-from feedback import FlowFeedback
+from feedback import FlowFeedback, ending_key
 from graph_layout import layout
 
 NODE_W, NODE_H = 190, 64
@@ -190,10 +190,12 @@ class GraphView(QGraphicsView):
             elif kind == ENDING:
                 sid, idx = rest.rsplit(":", 1)
                 o = t.steps[sid].options[int(idx)]
-                lines = (o.resolution or "").strip().splitlines()
-                stat = fb.endings.get((sid, int(idx))) if fb else None
+                ending = t.ending_for(o)
+                text = ending.text if ending else ""
+                lines = text.strip().splitlines()
+                stat = fb.endings.get(ending_key(t, sid, int(idx))) if fb else None
                 self._draw_pill(box, "✓ " + (lines[0] if lines else "(no resolution)"), theme.GREEN, sid,
-                                taken=(sid, int(idx)) in path_edges, tip=o.resolution or "", stat=stat,
+                                taken=(sid, int(idx)) in path_edges, tip=text, stat=stat,
                                 with_stats=fb is not None)
             else:
                 sid, idx = rest.rsplit(":", 1)

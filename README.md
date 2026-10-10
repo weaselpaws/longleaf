@@ -87,6 +87,19 @@ flow. `build_client_release.py` bundles every referenced image into the exe.
 A screenshot that fails to load at runtime is skipped, never an error screen.
 Reports stay text-only.
 
+### Shared endings and KB articles
+
+An answer can end the flow inline (its own `resolution` text) or at a **shared
+resolution** (`"resolution_id": "…"`) defined once in the flow's top-level
+`resolutions` dict, so many paths finish at the same ending and the fix is
+edited in one place. Steps and resolutions can also offer **KB articles**
+(`"articles": ["…"]`, defined in the top-level `articles` dict) that a tech can
+read, attach to the ticket, or use as the resolution. Both are optional and
+flows without them are unchanged. See `examples/shared_resolutions_and_kb.json`
+and the "Shared resolutions and KB articles" section of
+[`docs/API.md`](docs/API.md). Engine support is in; Player and Editor screens
+for them are not built yet.
+
 ### Session records and reports
 
 Every pass through a flow is a `SessionRecord` (`engine.record()`): the

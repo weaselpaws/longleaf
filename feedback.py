@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 from engine import (
     OUTCOME_RESOLVED, SCHEMA_VERSION, SessionRecord, Tree, _now,
@@ -172,6 +172,16 @@ def merge_records(existing: dict[str, SessionRecord], incoming: Iterable[Session
 # Analysis (Editor side)
 # ---------------------------------------------------------------------
 
+EndingKey = Union[str, tuple]   # a shared resolution's id, or (step id, answer index) for an inline ending
+
+
+def ending_key(tree: Tree, step_id: str, option_index: int) -> EndingKey:
+    """Which ending an answer leads to. Answers that point at a shared
+    resolution all count as the one ending, whatever path led there; inline
+    endings are told apart by where they sit."""
+    return tree.steps[step_id].options[option_index].resolution_id or (step_id, option_index)
+
+
 @dataclass
 class EndingStat:
     count: int = 0
@@ -203,7 +213,7 @@ class FlowFeedback:
     resolved: int = 0
     step_visits: dict[str, int] = field(default_factory=dict)
     edge_counts: dict[tuple[str, int], int] = field(default_factory=dict)       # (step id, answer index) -> times taken
-    endings: dict[tuple[str, int], EndingStat] = field(default_factory=dict)    # the same key, for answers that end the flow
+    endings: dict[EndingKey, EndingStat] = field(default_factory=dict)          # see ending_key(): resolution id, or (step id, answer index)
     comments: dict[str, list[Comment]] = field(default_factory=dict)            # step id -> comments from sessions that ended there
     durations: list[int] = field(default_factory=list)                          # seconds, resolved sessions only
 
@@ -258,11 +268,10 @@ def analyze(tree: Tree, records: Iterable[SessionRecord]) -> FlowFeedback:
             fb.edge_counts[key] = fb.edge_counts.get(key, 0) + 1
 
         last = r.history[-1]
-        key = (last.step_id, last.option_index)
         ended_here = r.outcome == OUTCOME_RESOLVED and tree.steps[last.step_id].options[last.option_index].is_terminal
         if ended_here:
             fb.resolved += 1
-            stat = fb.endings.setdefault(key, EndingStat())
+            stat = fb.endings.setdefault(ending_key(tree, last.step_id, last.option_index), EndingStat())
             stat.count += 1
             secs = _seconds(r)
             if secs is not None:
@@ -281,6 +290,11 @@ def analyze(tree: Tree, records: Iterable[SessionRecord]) -> FlowFeedback:
 
 def _pct(x: Optional[float]) -> str:
     return "—" if x is None else f"{round(x * 100)}%"
+
+
+def _clip(text: str, n: int = 50) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[:n - 1] + "…"
 
 
 def foreign_sessions(tree: Tree, records: Iterable[SessionRecord]) -> int:
@@ -316,9 +330,14 @@ def summarize(tree: Tree, fb: FlowFeedback, duplicates: int = 0, foreign: int = 
     weak = [(k, e) for k, e in rated if e.helpful_rate < 0.5][:5]
     if weak:
         lines += ["", "Endings techs found unhelpful:"]
-        for (sid, idx), e in weak:
-            opt = tree.steps[sid].options[idx]
-            lines.append(f"  • {sid} → “{opt.label}”: {_pct(e.helpful_rate)} helpful of {e.rated}")
+        for key, e in weak:
+            if isinstance(key, str):
+                res = tree.resolutions.get(key)
+                what = f"shared resolution “{_clip(res.text if res else key)}”"
+            else:
+                sid, idx = key
+                what = f"{sid} → “{tree.steps[sid].options[idx].label}”"
+            lines.append(f"  • {what}: {_pct(e.helpful_rate)} helpful of {e.rated}")
     n_comments = sum(len(c) for c in fb.comments.values())
     if n_comments:
         lines += ["", f"{n_comments} comment{'s' if n_comments != 1 else ''}, pinned to the steps they came from "
@@ -337,7 +356,7 @@ def step_feedback_text(tree: Tree, fb: FlowFeedback, step_id: str) -> str:
     for i, o in enumerate(step.options):
         n = fb.edge_counts.get((step_id, i), 0)
         line = f"  • “{o.label}”: {n}"
-        stat = fb.endings.get((step_id, i))
+        stat = fb.endings.get(ending_key(tree, step_id, i)) if o.is_terminal else None
         if stat and stat.rated:
             line += f"  —  ends here, {_pct(stat.helpful_rate)} helpful of {stat.rated}"
         elif stat:

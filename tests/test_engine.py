@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import (  # noqa: E402
+    ARTICLE_ATTACH, ARTICLE_READ, ARTICLE_RESOLUTION, Article, Resolution,
     FlowFormatError, HistoryEntry, Option, SessionRecord, Step, Tree, TroubleshootEngine,
     OUTCOME_ERROR, OUTCOME_IN_PROGRESS, OUTCOME_RESOLVED, SEVERITY_ERROR, SEVERITY_WARNING,
 )
@@ -368,3 +369,215 @@ def test_build_stages_assets_at_their_relative_paths(tmp_path):
     pairs = stage_assets(t.to_dict(), flow_dir, staging)
     assert sorted((p.relative_to(staging).as_posix(), d) for p, d in pairs) == [("logo.png", "."), ("shots/a.png", "shots")]
     assert (staging / "shots" / "a.png").read_bytes() == b"a"
+
+
+# ---------- shared resolutions ----------
+
+def shared_tree(**kw) -> Tree:
+    """Two different paths (a->b, a->c) that finish at the same shared ending."""
+    return tree_of(
+        Step("a", "Q a", [Option("left", "b"), Option("right", "c")]),
+        Step("b", "Q b", [Option("done", None, resolution_id="fix")]),
+        Step("c", "Q c", [Option("done", None, resolution_id="fix")]),
+        resolutions={"fix": Resolution("fix", "Reseat the cable.", image="shots/fix.png")},
+        **kw,
+    )
+
+
+def test_unused_features_are_omitted_from_saved_flows():
+    d = tree_of(Step("a", "Q", [end()])).to_dict()
+    assert "resolutions" not in d and "articles" not in d
+    assert "articles" not in d["steps"]["a"] and "resolution_id" not in d["steps"]["a"]["options"][0]
+
+
+def test_shared_resolution_round_trips():
+    t = shared_tree()
+    again = Tree.from_dict(json.loads(json.dumps(t.to_dict())))
+    assert again.to_dict() == t.to_dict()
+    assert again.steps["b"].options[0].resolution_id == "fix"
+    assert again.resolutions["fix"].text == "Reseat the cable."
+    assert t.check() == []
+
+
+def test_two_paths_reach_the_same_ending_and_record_it_once():
+    t = shared_tree()
+    seen = []
+    for first in (0, 1):
+        e = TroubleshootEngine(t)
+        e.choose(e.current_step.options[first])
+        e.choose(e.current_step.options[0])
+        assert e.outcome == OUTCOME_RESOLVED
+        assert (e.resolution, e.resolution_image, e.resolution_id) == ("Reseat the cable.", "shots/fix.png", "fix")
+        rec = e.record()
+        assert rec.resolution_id == "fix" and rec.resolution == "Reseat the cable."
+        seen.append((rec.resolution_id, [h.step_id for h in rec.history]))
+    assert seen == [("fix", ["a", "b"]), ("fix", ["a", "c"])]    # different paths, same ending id
+
+
+def test_inline_ending_has_no_resolution_id_and_go_back_clears_it():
+    e = TroubleshootEngine(shared_tree())
+    e.choose(e.current_step.options[0])
+    e.choose(e.current_step.options[0])
+    assert e.resolution_id == "fix"
+    e.go_back()
+    assert e.resolution_id is None and e.resolution is None and e.record().resolution_id is None
+    t = tree_of(Step("a", "Q", [end()]))
+    e2 = TroubleshootEngine(t)
+    e2.choose(t.steps["a"].options[0])
+    assert e2.record().resolution_id is None
+
+
+def test_shared_resolution_screenshot_is_a_build_asset_and_option_image_is_the_fallback():
+    t = shared_tree()
+    assert t.asset_paths() == ["shots/fix.png"]
+    t.resolutions["fix"].image = ""
+    t.steps["b"].options[0].image = "shots/b.png"
+    assert t.ending_for(t.steps["b"].options[0]).image == "shots/b.png"
+    assert t.ending_for(t.steps["c"].options[0]).image == ""
+
+
+def test_missing_shared_resolution_is_an_error_and_ends_visibly():
+    t = tree_of(Step("a", "Q", [Option("x", None, resolution_id="ghost")]))
+    assert "MISSING_RESOLUTION" in codes(t) and "NO_RESOLUTION" not in codes(t)
+    e = TroubleshootEngine(t)
+    e.choose(t.steps["a"].options[0])
+    assert e.outcome == OUTCOME_ERROR and "ghost" in e.resolution and e.resolution_id is None
+
+
+def test_shared_resolution_validation_codes():
+    only = lambda t, code: [i for i in t.check() if i.code == code]   # noqa: E731
+    t = tree_of(Step("a", "Q", [Option("x", "b", resolution_id="r"), Option("y", None, "inline", resolution_id="r")]),
+                Step("b", "B", [end()]),
+                resolutions={"r": Resolution("r", "shared"), "empty": Resolution("empty", "  "), "unused": Resolution("unused", "t")})
+    assert [(i.severity, i.option_index) for i in only(t, "IGNORED_RESOLUTION")] == [(SEVERITY_WARNING, 0), (SEVERITY_WARNING, 1)]
+    assert only(t, "EMPTY_RESOLUTION")[0].severity == SEVERITY_ERROR
+    assert only(t, "UNUSED_RESOLUTION")[0].severity == SEVERITY_WARNING
+    assert [("empty" in i.message, "unused" in i.message) for i in only(t, "UNUSED_RESOLUTION")] == [(True, False), (False, True)]
+    t.resolutions["r"] = Resolution("other", "shared")
+    assert "ID_MISMATCH" in codes(t)
+
+
+def test_delete_resolution_unlinks_answers():
+    t = shared_tree()
+    t.delete_resolution("fix")
+    assert t.steps["b"].options[0].resolution_id is None
+    assert "NO_RESOLUTION" in codes(t)
+    assert t.add_resolution("x").id == "res_1" and t.add_resolution("y").id == "res_2"
+
+
+# ---------- KB articles ----------
+
+def kb_tree() -> Tree:
+    return tree_of(
+        Step("a", "Q a", [Option("go", "b")], articles=["kb_net"]),
+        Step("b", "Q b", [Option("done", None, resolution_id="fix")]),
+        resolutions={"fix": Resolution("fix", "Reseat the cable.", articles=["kb_cable", "kb_net"])},
+        articles={"kb_net": Article("kb_net", "Network basics", "Body text", "https://kb.example.com/net"),
+                  "kb_cable": Article("kb_cable", "Cable seating")},
+    )
+
+
+def test_articles_round_trip_and_validate_clean():
+    t = kb_tree()
+    again = Tree.from_dict(json.loads(json.dumps(t.to_dict())))
+    assert again.to_dict() == t.to_dict()
+    assert again.steps["a"].articles == ["kb_net"] and again.articles["kb_net"].url == "https://kb.example.com/net"
+    assert t.check() == []
+
+
+def test_articles_on_offer_follow_the_step_then_the_ending():
+    e = TroubleshootEngine(kb_tree())
+    assert [a.id for a in e.articles_here()] == ["kb_net"]
+    e.choose(e.current_step.options[0])
+    assert e.articles_here() == []                       # step b offers none
+    e.choose(e.current_step.options[0])
+    assert [a.id for a in e.articles_here()] == ["kb_cable", "kb_net"]
+    e.go_back()
+    assert e.articles_here() == [] and e.current_id == "b"
+
+
+def test_article_validation_codes():
+    t = tree_of(Step("a", "Q", [end()], articles=["ghost"]),
+                resolutions={"r": Resolution("r", "t", articles=["ghost2"])},
+                articles={"blank": Article("blank", " "), "unused": Article("unused", "t")})
+    got = {(i.code, i.severity) for i in t.check()}
+    assert {("MISSING_ARTICLE", SEVERITY_ERROR), ("EMPTY_ARTICLE", SEVERITY_ERROR), ("UNUSED_ARTICLE", SEVERITY_WARNING)} <= got
+    assert sum(i.code == "MISSING_ARTICLE" for i in t.check()) == 2    # one on the step, one on the resolution
+    t.articles["x"] = Article("y", "t")
+    assert "ID_MISMATCH" in codes(t)
+
+
+def test_delete_article_removes_every_reference():
+    t = kb_tree()
+    t.delete_article("kb_net")
+    assert t.steps["a"].articles == [] and t.resolutions["fix"].articles == ["kb_cable"]
+    assert "MISSING_ARTICLE" not in codes(t)
+    assert t.add_article().id == "kb_1"
+
+
+def test_record_article_logs_reads_and_attaches_once():
+    e = TroubleshootEngine(kb_tree())
+    e.record_article("kb_net", ARTICLE_READ)
+    e.record_article("kb_net", ARTICLE_READ)
+    e.record_article("kb_net", ARTICLE_ATTACH)
+    e.record_article("kb_net", ARTICLE_ATTACH)       # idempotent
+    assert [(x.article_id, x.action, x.title) for x in e.record().articles] == [
+        ("kb_net", ARTICLE_READ, "Network basics"), ("kb_net", ARTICLE_READ, "Network basics"),
+        ("kb_net", ARTICLE_ATTACH, "Network basics")]
+    with pytest.raises(ValueError):
+        e.record_article("nope", ARTICLE_READ)
+    with pytest.raises(ValueError):
+        e.record_article("kb_net", ARTICLE_RESOLUTION)   # that has its own method
+    with pytest.raises(ValueError):
+        e.record_article("kb_net", "shred")
+
+
+def test_article_as_resolution_finishes_the_session_and_go_back_undoes_only_that():
+    e = TroubleshootEngine(kb_tree())
+    e.record_article("kb_net", ARTICLE_ATTACH)
+    e.choose(e.current_step.options[0])
+    e.use_article_as_resolution("kb_net")
+    assert e.is_finished and e.outcome == OUTCOME_RESOLVED and e.resolution_id is None
+    assert e.resolution == "KB article: Network basics (https://kb.example.com/net)"
+    assert [x.action for x in e.record().articles] == [ARTICLE_ATTACH, ARTICLE_RESOLUTION]
+    e.go_back()
+    assert [x.action for x in e.record().articles] == [ARTICLE_ATTACH]
+    assert not e.is_finished
+    with pytest.raises(ValueError):
+        e.use_article_as_resolution("nope")
+
+
+def test_article_events_survive_json_and_show_in_reports_only_when_attached():
+    e = TroubleshootEngine(kb_tree())
+    e.record_article("kb_cable", ARTICLE_READ)
+    assert "KB attached" not in e.record().to_text()
+    e.record_article("kb_net", ARTICLE_ATTACH)
+    e.choose(e.current_step.options[0])
+    e.choose(e.current_step.options[0])
+    rec = e.record()
+    again = SessionRecord.from_dict(json.loads(rec.to_json()))
+    assert again.to_dict() == rec.to_dict() and again.resolution_id == "fix"
+    assert "KB attached: Network basics" in rec.to_text()
+    assert "**KB attached:** Network basics" in rec.to_markdown()
+    assert "Network basics" in rec.to_html()
+
+
+def test_old_session_records_without_the_new_fields_still_load():
+    rec = TroubleshootEngine(tree_of(Step("a", "Q", [end()]))).record().to_dict()
+    del rec["resolution_id"], rec["articles"]
+    again = SessionRecord.from_dict(rec)
+    assert again.resolution_id is None and again.articles == []
+
+
+@pytest.mark.parametrize("bad", [
+    {"resolutions": ["a"], "steps": {}},
+    {"articles": "kb", "steps": {}},
+    {"steps": {"a": {"question": "Q", "articles": "kb_net", "options": []}}},
+    {"steps": {"a": {"question": "Q", "articles": [1], "options": []}}},
+    {"resolutions": {"r": "text"}, "steps": {}},
+    {"resolutions": {"r": {"text": "t", "articles": "kb"}}, "steps": {}},
+    {"articles": {"k": ["x"]}, "steps": {}},
+])
+def test_malformed_shared_content_raises_flow_format_error(bad):
+    with pytest.raises(FlowFormatError):
+        Tree.from_dict(bad)
