@@ -73,10 +73,21 @@ class StepEditor(QWidget):
         scroll.setWidget(self.options_container)
         root.addWidget(scroll, 1)
 
+        self.feedback_box = QPlainTextEdit()
+        self.feedback_box.setReadOnly(True)
+        self.feedback_box.setMaximumHeight(130)
+        self.feedback_box.setVisible(False)
+        root.addWidget(self.feedback_box)
+
     # ---------- wiring from the Editor ----------
 
     def set_all_steps_provider(self, fn):
         self.all_steps_provider = fn
+
+    def set_feedback_text(self, text: str):
+        """What imported sessions say about this step (read-only); hidden when empty."""
+        self.feedback_box.setPlainText(text)
+        self.feedback_box.setVisible(bool(text))
 
     def set_base_dir_provider(self, fn):
         self.base_dir_provider = fn

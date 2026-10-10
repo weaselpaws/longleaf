@@ -34,9 +34,11 @@ Worth most on flows of roughly 15+ steps; for small flows it is mainly a demo an
 
 Known gaps: a step with 5+ answers gets crowded edge labels; labels are truncated (full text in the tooltip); very large flows are untested beyond the shipped examples; it is read-only by design (see the editable canvas in section 5).
 
-## 4. 🔜 Local feedback capture (next)
+## 4. ✅ Local feedback capture
 
-No server. The Player asks "Did this solve it?" with an optional comment, stores records locally, and an Export button produces a file the client sends back. The Editor imports those files and overlays traffic per branch, helpful-rate per ending, and comments pinned to steps. The record shape already exists (`SessionRecord.feedback`, `engine.set_feedback()`).
+No server. The Player asks "Did this solve it?" with an optional comment, stores records locally, and an Export button produces a file the client sends back. The Editor imports those files and overlays traffic per branch, helpful-rate per ending, and comments pinned to steps. The record shape already existed (`SessionRecord.feedback`, `engine.set_feedback()`). See the README's "Feedback loop".
+
+Known gaps: the client has to send the file by hand (by design); no per-version filter on import (everything imported is measured against the flow currently open); no trend over time; sessions are matched by step id, so reusing an id for a different question mixes their data (see docs/API.md).
 
 This is also the basis for a recurring flow-review offering on the support contract.
 

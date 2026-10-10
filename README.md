@@ -112,6 +112,39 @@ client sign-off. Ctrl+wheel zooms; drag pans. Layout is a small layered
 that handles merges and loops: loops are drawn underneath and never stretch
 the layout.
 
+## Feedback loop (no server)
+
+The Player keeps what happened, and the client sends it back as a file:
+
+1. **Rating.** On a real ending the result screen asks **"Did this solve it?"**
+   (Yes / No, plus an optional comment). Clicking the lit button again clears it.
+2. **Saved locally.** Every finished session (with its ticket, technician, notes
+   and rating) is saved as a small JSON file the moment it finishes and updated
+   as the tech types, under the app-data folder, one folder per client
+   (`LONGLEAF_DATA_DIR` overrides the location). Going back from an ending
+   un-saves that session. The Editor's Test pane never records anything.
+3. **Export.** **File → Export Feedback…** writes every saved session into one
+   `longleaf_feedback_<client>_<date>.json` for the client to send back
+   (exports are cumulative; the Editor ignores repeats). **File → Clear Saved
+   Sessions…** deletes them from the machine. Notes and comments can contain
+   customer details, so the dialog says what the file includes.
+4. **Import (Editor).** **Feedback → Import feedback files…** takes one or more
+   of those files, merges them without double-counting, and overlays them on
+   the Graph tab: arrows thicken with traffic and never-taken answers fade,
+   steps show visit counts, endings show session count and helpful-rate (red
+   under 50%), and a numbered badge marks steps with comments. The step editor
+   gets a read-only panel with that step's counts and comments, and a summary
+   lists the endings techs found unhelpful. Sessions are matched to the flow by
+   step id + answer index, so feedback from older versions still lines up where
+   the ids survive; ones that don't are counted as "didn't match", and files
+   from a different client or flow trigger a warning.
+
+All of this is plain code in `feedback.py` (no Qt), unit-tested in
+`tests/test_feedback.py`. The file is `{"kind": "longleaf-feedback",
+"schema_version", "flow", "sessions": [SessionRecord…]}`, the same session
+record as in [`docs/API.md`](docs/API.md), so a hosted version could ingest the
+same data later.
+
 ## Example flows (`examples/`)
 
 Three worked examples across different verticals, used as starting
