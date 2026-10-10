@@ -28,7 +28,7 @@ the staged flow.json at the same relative paths.
 Also, before every build, this script statically re-checks that player_main.py's
 import graph can't reach editor_main.py or any of the editor-only widgets
 (widgets/editor_widget.py, widgets/step_editor.py, widgets/option_row.py,
-widgets/image_picker.py).
+widgets/image_picker.py, widgets/graph_view.py, graph_layout.py).
 If that ever becomes false — e.g. someone adds an "Edit" menu item to the
 Player down the road — the build refuses to run rather than silently
 shipping editing capability to a client.
@@ -48,7 +48,8 @@ from engine import FlowFormatError, Tree  # noqa: E402  (GUI-free; not part of t
 
 ROOT = Path(__file__).parent.resolve()
 PLAYER_ENTRY = ROOT / "player_main.py"
-FORBIDDEN_MODULES = {"editor_main", "widgets.editor_widget", "widgets.step_editor", "widgets.option_row", "widgets.image_picker"}
+FORBIDDEN_MODULES = {"editor_main", "widgets.editor_widget", "widgets.step_editor", "widgets.option_row", "widgets.image_picker",
+                     "widgets.graph_view", "graph_layout"}
 
 
 def _imported_modules(py_file: Path) -> set[str]:
