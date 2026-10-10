@@ -128,6 +128,12 @@ QPushButton:hover {{
     border: 1px solid {GOLD};
     color: {GOLD_BRIGHT};
 }}
+QPushButton:checked {{
+    background-color: {_rgba(GOLD, 0.25)};
+    border: 1px solid {GOLD};
+    color: {GOLD_BRIGHT};
+    font-weight: 600;
+}}
 QPushButton:pressed {{
     background-color: {GOLD_DIM};
     color: {BG};

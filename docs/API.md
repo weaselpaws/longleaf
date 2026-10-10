@@ -111,7 +111,7 @@ versions, or the history gets merged.
 
 This is `SessionRecord.to_dict()`. `schema_version` bumps only on incompatible changes;
 adding optional fields doesn't. `feedback` is `null` until a tech rates the ending (the
-engine supports it via `set_feedback()`; no Player UI collects it yet).
+Player asks "Did this solve it?" and stores it via `set_feedback()`; today the records travel as a file, see the README's "Feedback loop").
 
 <!-- session-record-example -->
 ```json

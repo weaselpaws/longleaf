@@ -11,7 +11,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QEvent
-from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+from PySide6.QtWidgets import QGraphicsSceneMouseEvent, QFileDialog, QMessageBox
 
 from engine import Option, Tree, TroubleshootEngine
 from theme import apply_theme
@@ -193,6 +193,121 @@ assert ge.graph.view.selected_id == "step_3"
 ge._on_test_step_changed("step_2")
 assert ge.graph.view.current_id == "step_2"
 print("graph view: draws steps/endings/missing links, click selects, progress, PNG+SVG export OK")
+
+# --- local feedback capture ---
+from feedback import SessionStore, load_bundle, write_bundle
+from PySide6.QtCore import QCoreApplication
+
+with tempfile.TemporaryDirectory() as d:
+    store = SessionStore(os.path.join(d, "sessions"))
+    ft = Tree.load("sample_tree.json")
+
+    # Test pane (no store): no feedback UI, nothing recorded
+    plain = PlayerWidget(Tree.load("sample_tree.json"))
+    while not plain.engine.is_finished:
+        plain._choose(plain.engine.current_step.options[0])
+    assert plain.feedback_widget.isHidden()
+
+    fp = PlayerWidget(ft, session_store=store)
+    fp.show()
+    assert fp.feedback_widget.isHidden()
+    while not fp.engine.is_finished:
+        fp._choose(fp.engine.current_step.options[0])
+    assert not fp.feedback_widget.isHidden() and store.count() == 1       # saved the moment it finished
+    sid = fp.engine.session_id
+
+    fp.yes_btn.click()
+    assert fp.yes_btn.isChecked() and fp.engine.feedback == {"helpful": True, "comment": ""}
+    fp.no_btn.click()
+    assert not fp.yes_btn.isChecked() and fp.engine.feedback["helpful"] is False
+    fp.no_btn.click()                                                     # clicking the lit one clears it
+    assert fp.engine.feedback is None
+    fp.yes_btn.click()
+    fp.feedback_comment.setText("Fixed it first try")
+    fp.ticket_input.setText("INC-7")
+    fp.flush()
+    (saved,) = store.load_all()
+    assert saved.session_id == sid and saved.ticket_ref == "INC-7"
+    assert saved.feedback == {"helpful": True, "comment": "Fixed it first try"}
+
+    fp._go_back()                                                          # un-finishing removes the saved record
+    assert store.count() == 0 and fp.feedback_widget.isHidden()
+    while not fp.engine.is_finished:
+        fp._choose(fp.engine.current_step.options[0])
+    assert store.count() == 1
+    fp.restart()                                                          # new session: inputs cleared, old one kept
+    assert store.count() == 1 and not fp.yes_btn.isChecked() and fp.feedback_comment.text() == ""
+    while not fp.engine.is_finished:
+        fp._choose(fp.engine.current_step.options[-1])
+    assert store.count() == 2
+
+    # a flow error is saved but isn't asked about
+    eb = Tree.load("sample_tree.json")
+    eb.steps[eb.root_id].options[0].next_id = "ghost"
+    fe = PlayerWidget(eb, session_store=store)
+    fe._choose(eb.steps[eb.root_id].options[0])
+    assert fe.feedback_widget.isHidden() and store.count() == 3
+
+    # the Player window: per-client store, export, clear
+    import player_main
+    os.environ[player_main.DATA_DIR_ENV] = os.path.join(d, "appdata")
+    win = player_main.PlayerWindow()
+    assert win.store is not None and str(win.store.folder).startswith(os.path.join(d, "appdata", "sessions"))
+    while not win.player.engine.is_finished:
+        win.player._choose(win.player.engine.current_step.options[0])
+    win.player.yes_btn.click()
+    win.player.flush()
+    out = os.path.join(d, "fb.json")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
+    QMessageBox.information = staticmethod(lambda *a, **k: None)
+    win._export_feedback()
+    (rec,) = load_bundle(out)
+    assert rec.feedback == {"helpful": True, "comment": ""}
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+    win._clear_sessions()
+    assert win.store.count() == 0
+    win.close()
+    del os.environ[player_main.DATA_DIR_ENV]
+
+    # Editor: import files, overlay on the graph, step panel, summary, clear
+    et = Tree.load("examples/it_helpdesk_no_network.json")
+    et.client = "acme"
+    ed2 = EditorWidget(et)
+    recs = []
+    for picks, helpful, comment in (([0, 0, 1], False, "Wi-Fi was fine, cable was loose"), ([0, 0, 0], True, ""), ([0, 0, 0], True, "")):
+        e = TroubleshootEngine(et)
+        for i in picks:
+            if e.is_finished:
+                break
+            e.choose(e.current_step.options[min(i, len(e.current_step.options) - 1)])
+        e.set_feedback(helpful, comment)
+        recs.append(e.record())
+    b1, b2 = os.path.join(d, "one.json"), os.path.join(d, "two.json")
+    write_bundle(b1, recs[:2], et)
+    write_bundle(b2, recs[1:], et)                                        # overlaps b1 by one session
+    bad = os.path.join(d, "bad.json")
+    open(bad, "w").write("{}")
+    shown = []
+    QMessageBox.information = staticmethod(lambda parent, title, text: shown.append(text))
+    QMessageBox.warning = staticmethod(lambda parent, title, text: shown.append(text))
+    ed2.import_feedback_files([b1, b2, bad])
+    assert len(ed2.feedback_records) == 3 and ed2._feedback_dupes == 1
+    assert "3 sessions matched" in shown[-1] and "1 duplicate skipped" in shown[-1] and "not a Longleaf feedback file" in shown[-1]
+    assert ed2.right_tabs.currentWidget() is ed2.graph and ed2.graph.view.feedback is ed2.feedback
+    root_id = et.root_id
+    ed2.select_step(root_id)
+    assert "visits from imported sessions" in ed2.step_editor.feedback_box.toPlainText()
+    assert not ed2.step_editor.feedback_box.isHidden()
+    tips = " ".join(i.toolTip() for i in ed2.graph.view.scene().items() if hasattr(i, "toolTip"))
+    assert "cable was loose" in tips and "% helpful" in tips
+    png = os.path.join(d, "overlay.png")
+    assert ed2.graph.export_png(png)
+    ed2.tree.steps[root_id].options[0].label = "Renamed"                  # editing the flow keeps the overlay consistent
+    ed2._on_step_edited()
+    assert ed2.feedback is not None and ed2.feedback.sessions == 3
+    ed2._clear_feedback()
+    assert ed2.feedback is None and ed2.graph.view.feedback is None and ed2.step_editor.feedback_box.isHidden()
+print("feedback: Player rating + local save, export/clear, Editor import/dedupe/overlay/step panel OK")
 
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails

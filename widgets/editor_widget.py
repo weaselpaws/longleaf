@@ -12,11 +12,12 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QLineEdit, QMessageBox, QFileDialog, QDialog, QDialogButtonBox,
-    QFormLayout, QColorDialog, QTabWidget
+    QFormLayout, QColorDialog, QTabWidget, QMenu
 )
 from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt, Signal
 
+from feedback import FeedbackFormatError, analyze, foreign_sessions, load_bundle, merge_records, step_feedback_text, summarize
 from engine import Branding, Tree, Issue, SEVERITY_ERROR, is_hex_color
 from theme import TEXT_DIM, GOLD, GREEN, RED
 from widgets.graph_view import GraphPanel
@@ -122,6 +123,9 @@ class EditorWidget(QWidget):
         self.tree = tree or Tree()
         self.current_path: str | None = None
         self._dirty = False
+        self.feedback_records: dict = {}    # imported sessions, by session id
+        self.feedback = None                # their analysis against the current flow
+        self._feedback_dupes = 0
         self._build_ui()
         self._reload_all()
 
@@ -208,6 +212,13 @@ class EditorWidget(QWidget):
         title_row.addWidget(self.version_input)
         self.status_label = QLabel("")
         title_row.addWidget(self.status_label)
+        feedback_btn = QPushButton("Feedback")
+        feedback_menu = QMenu(feedback_btn)
+        feedback_menu.addAction("Import feedback files…", self._import_feedback)
+        feedback_menu.addAction("Show summary…", self._show_feedback_summary)
+        feedback_menu.addAction("Clear imported feedback", self._clear_feedback)
+        feedback_btn.setMenu(feedback_menu)
+        title_row.addWidget(feedback_btn)
         branding_btn = QPushButton("Branding…")
         branding_btn.clicked.connect(self._edit_branding)
         title_row.addWidget(branding_btn)
@@ -293,6 +304,8 @@ class EditorWidget(QWidget):
         unreachable = set(self.tree.steps) - self.tree.reachable_ids()
         error_steps = {i.step_id for i in issues if i.is_error and i.step_id}
         self._update_status(issues)
+        self._recompute_feedback()
+        self.graph.view.feedback = self.feedback      # assigned first so set_tree redraws once
         self.graph.view.set_tree(self.tree, issues)
         self.outline_list.blockSignals(True)
         self.outline_list.clear()
@@ -322,6 +335,7 @@ class EditorWidget(QWidget):
         sid = current.data(Qt.UserRole) if current else None
         step = self.tree.steps.get(sid) if sid else None
         self.step_editor.set_step(step)
+        self._show_step_feedback(sid)
         self.graph.view.set_selected(sid)
 
     def _on_step_edited(self):
@@ -403,6 +417,63 @@ class EditorWidget(QWidget):
             item = self.outline_list.item(i)
             base = item.text().replace("▶ ", "", 1)
             item.setText(("▶ " if item.data(Qt.UserRole) == step_id else "") + base)
+
+    # ---------- imported feedback ----------
+
+    def _recompute_feedback(self):
+        self.feedback = analyze(self.tree, self.feedback_records.values()) if self.feedback_records else None
+
+    def _show_step_feedback(self, step_id):
+        text = step_feedback_text(self.tree, self.feedback, step_id) if self.feedback and step_id else ""
+        self.step_editor.set_feedback_text(text)
+
+    def _import_feedback(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import feedback files", "", "Longleaf feedback (*.json)")
+        if paths:
+            self.import_feedback_files(paths)
+
+    def import_feedback_files(self, paths: list[str]):
+        """Merge feedback files into the imported set and redraw. Files that
+        can't be read are reported, not fatal; the rest still import."""
+        problems, loaded = [], 0
+        for path in paths:
+            try:
+                records = load_bundle(path)
+            except FeedbackFormatError as e:
+                problems.append(str(e))
+                continue
+            self._feedback_dupes += merge_records(self.feedback_records, records)
+            loaded += 1
+        if loaded:
+            self._after_feedback_change()
+            self.right_tabs.setCurrentWidget(self.graph)
+        text = self._feedback_summary() if self.feedback else ""
+        if problems:
+            text += ("\n\n" if text else "") + "Skipped:\n" + "\n".join(f"  • {p}" for p in problems)
+        if text:
+            (QMessageBox.warning if problems and not loaded else QMessageBox.information)(
+                self, "Imported feedback", text)
+
+    def _feedback_summary(self) -> str:
+        return summarize(self.tree, self.feedback, self._feedback_dupes,
+                         foreign_sessions(self.tree, self.feedback_records.values()))
+
+    def _after_feedback_change(self):
+        self._recompute_feedback()
+        self.graph.view.set_feedback(self.feedback)
+        item = self.outline_list.currentItem()
+        self._show_step_feedback(item.data(Qt.UserRole) if item else None)
+
+    def _show_feedback_summary(self):
+        if not self.feedback:
+            QMessageBox.information(self, "Feedback", "No feedback imported yet. Use Feedback → Import feedback files…")
+            return
+        QMessageBox.information(self, "Feedback summary", self._feedback_summary())
+
+    def _clear_feedback(self):
+        self.feedback_records.clear()
+        self._feedback_dupes = 0
+        self._after_feedback_change()
 
     def _edit_branding(self):
         dlg = BrandingDialog(self.tree.branding, self.base_dir, self)

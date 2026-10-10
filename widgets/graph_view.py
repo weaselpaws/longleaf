@@ -12,6 +12,9 @@ answer pointing at a step that doesn't exist leads to a red dashed
   * the live Test pane: the current step is filled, the path taken so far
     is drawn in the accent colour
   * the step selected in the outline
+  * imported feedback (see feedback.py): arrows thicker where more sessions
+    went, never-taken answers dimmed, visit counts on steps, helpful-rate
+    on endings, and a numbered badge on steps that have comments
 
 Click a step to select it in the outline. Ctrl+wheel zooms, drag pans.
 Export writes the whole graph as PNG or SVG (for client sign-off).
@@ -29,10 +32,11 @@ from PySide6.QtGui import (
 
 import theme
 from engine import Tree, SEVERITY_ERROR
+from feedback import FlowFeedback
 from graph_layout import layout
 
 NODE_W, NODE_H = 190, 64
-END_W, END_H = 150, 34
+END_W, END_H = 150, 46
 X_GAP, Y_GAP = 110, 26
 LABEL_W = X_GAP - 14
 AMBER = "#D8A23A"
@@ -79,8 +83,13 @@ class GraphView(QGraphicsView):
         self.current_id: str | None = None
         self.path: list[tuple[str, int]] = []   # (step_id, option_index) answers taken so far
         self.selected_id: str | None = None
+        self.feedback: FlowFeedback | None = None
 
     # ---------- public API ----------
+
+    def set_feedback(self, feedback: FlowFeedback | None):
+        self.feedback = feedback
+        self.rebuild()
 
     def set_tree(self, tree: Tree, issues=None):
         self.tree = tree
@@ -167,8 +176,10 @@ class GraphView(QGraphicsView):
             boxes[key] = QRectF(x, y, w, h)
 
         # edges first so nodes draw over their ends
-        for src, dst, sid, i, label, count in edges:
-            self._draw_edge(boxes[src], boxes[dst], label, i, count, taken=(sid, i) in path_edges,
+        fb = self.feedback
+        for src, dst, sid, i, label, n_options in edges:
+            traffic = fb.edge_counts.get((sid, i), 0) if fb else None
+            self._draw_edge(boxes[src], boxes[dst], label, i, n_options, traffic, taken=(sid, i) in path_edges,
                             broken=dst.startswith(MISSING + ":"), backwards=placed[dst].layer <= placed[src].layer)
 
         for key, box in boxes.items():
@@ -180,8 +191,10 @@ class GraphView(QGraphicsView):
                 sid, idx = rest.rsplit(":", 1)
                 o = t.steps[sid].options[int(idx)]
                 lines = (o.resolution or "").strip().splitlines()
+                stat = fb.endings.get((sid, int(idx))) if fb else None
                 self._draw_pill(box, "✓ " + (lines[0] if lines else "(no resolution)"), theme.GREEN, sid,
-                                taken=(sid, int(idx)) in path_edges, tip=o.resolution or "")
+                                taken=(sid, int(idx)) in path_edges, tip=o.resolution or "", stat=stat,
+                                with_stats=fb is not None)
             else:
                 sid, idx = rest.rsplit(":", 1)
                 o = t.steps[sid].options[int(idx)]
@@ -229,9 +242,32 @@ class GraphView(QGraphicsView):
         title.setPos(box.x() + 10, box.y() + 8)
         sub_font = QFont(self.font())
         sub_font.setPointSize(8)
-        sub = self._text(f"{step.id} · {len(step.options)} answer{'s' if len(step.options) != 1 else ''}", node,
-                         sub_font, theme.TEXT_DIM, NODE_W - 20)
+        detail = f"{step.id} · {len(step.options)} answer{'s' if len(step.options) != 1 else ''}"
+        fb = self.feedback
+        if fb is not None:
+            n = fb.step_visits.get(step.id, 0)
+            detail += f" · {n} visit{'s' if n != 1 else ''}"
+        sub = self._text(detail, node, sub_font, theme.TEXT_DIM, NODE_W - 20)
         sub.setPos(box.x() + 10, box.y() + 31)
+        if fb is not None and fb.comments.get(step.id):
+            self._draw_comment_badge(box, fb.comments[step.id], node)
+
+    def _draw_comment_badge(self, box: QRectF, comments, node):
+        """A small numbered bubble on the step's top-right corner; its tooltip lists the comments."""
+        d = 22
+        badge = QGraphicsRectItem(QRectF(box.right() - d / 2 - 4, box.top() - d / 2, d, d), node)
+        badge.setBrush(QColor(theme.GOLD))
+        badge.setPen(QPen(QColor(theme.BG), 2))
+        mark = {True: "▲", False: "▼", None: "•"}
+        badge.setToolTip("\n".join(f"{mark[c.helpful]} {c.text}" + (f"  ({c.ticket_ref})" if c.ticket_ref else "")
+                                   for c in comments))
+        font = QFont(self.font())
+        font.setPointSize(8)
+        font.setBold(True)
+        label = self._text(str(len(comments)), badge, font, theme.BG, d)
+        label.setPos(badge.rect().center().x() - label.boundingRect().width() / 2,
+                     badge.rect().center().y() - label.boundingRect().height() / 2)
+        badge.setAcceptedMouseButtons(Qt.NoButton)
 
     def _fill(self, current: bool) -> QColor:
         if current:
@@ -248,7 +284,10 @@ class GraphView(QGraphicsView):
         item.setAcceptedMouseButtons(Qt.NoButton)   # clicks fall through to the node
         return item
 
-    def _draw_pill(self, box, text, color, step_id, dashed=False, taken=False, tip=""):
+    def _draw_pill(self, box, text, color, step_id, dashed=False, taken=False, tip="", stat=None, with_stats=False):
+        rate = stat.helpful_rate if stat else None
+        if rate is not None and rate < 0.5:
+            color = theme.RED                      # techs found this ending unhelpful
         node = _Node(box, step_id, self.node_clicked.emit)
         fill = QColor(color)
         fill.setAlphaF(0.30 if taken else 0.10)
@@ -259,27 +298,49 @@ class GraphView(QGraphicsView):
         font = QFont(self.font())
         font.setPointSize(9)
         label = self._text(text, node, font, color, int(box.width()) - 20)
-        label.setPos(box.x() + 10, box.y() + (box.height() - QFontMetrics(font).height()) / 2)
+        line_h = QFontMetrics(font).height()
+        if not with_stats:
+            label.setPos(box.x() + 10, box.y() + (box.height() - line_h) / 2)
+            return
+        label.setPos(box.x() + 10, box.y() + 6)
+        if stat is None:
+            detail = "no sessions"
+        else:
+            detail = f"{stat.count} session{'s' if stat.count != 1 else ''}"
+            if stat.rated:
+                detail += f" · {round(100 * stat.helpful_rate)}% helpful"
+        small = QFont(self.font())
+        small.setPointSize(8)
+        sub = self._text(detail, node, small, theme.TEXT_DIM, int(box.width()) - 20)
+        sub.setPos(box.x() + 10, box.y() + 6 + line_h + 2)
+        if stat is not None:
+            node.setToolTip(f"{tip}\n\n{detail}" + (f" ({stat.helpful} yes, {stat.unhelpful} no)" if stat.rated else ""))
 
-    def _draw_edge(self, a: QRectF, b: QRectF, label: str, index: int, count: int, taken: bool, broken: bool, backwards: bool):
+    def _draw_edge(self, a: QRectF, b: QRectF, label: str, index: int, n_options: int, traffic, taken: bool, broken: bool, backwards: bool):
         if backwards:   # loop or same-column link: route underneath so it can't cut through boxes
             start, end = QPointF(a.center().x(), a.bottom()), QPointF(b.center().x(), b.bottom())
             drop = 46 + abs(a.center().x() - b.center().x()) * 0.08
             c1, c2 = QPointF(start.x(), start.y() + drop), QPointF(end.x(), end.y() + drop)
         else:
             # each answer leaves from its own point on the right side, so labels don't pile up
-            start = QPointF(a.right(), a.top() + a.height() * (index + 1) / (count + 1))
+            start = QPointF(a.right(), a.top() + a.height() * (index + 1) / (n_options + 1))
             end = QPointF(b.left(), b.center().y())
             dx = max(40.0, (end.x() - start.x()) * 0.5)
             c1, c2 = QPointF(start.x() + dx, start.y()), QPointF(end.x() - dx, end.y())
         path = QPainterPath(start)
         path.cubicTo(c1, c2, end)
 
-        color = theme.GOLD if taken else (theme.RED if broken else theme.TEXT_DIM)
+        color = QColor(theme.GOLD if taken else (theme.RED if broken else theme.TEXT_DIM))
+        width = 2.5 if taken else 1.2
+        if traffic is not None and not taken:     # feedback loaded: thickness = share of the busiest answer
+            peak = self.feedback.max_edge_count or 1
+            width = 1.2 + 4.8 * traffic / peak
+            if traffic == 0 and not broken:
+                color.setAlpha(80)                # never taken
         item = QGraphicsPathItem(path)
-        item.setPen(self._pen(color, 2.5 if taken else 1.2, dashed=broken))
+        item.setPen(self._pen(color.name(QColor.HexArgb), width, dashed=broken))
         item.setZValue(1 if taken else 0)
-        item.setToolTip(label)
+        item.setToolTip(label if traffic is None else f"{label}\n{traffic} session{'s' if traffic != 1 else ''}")
         self._scene.addItem(item)
 
         # arrowhead along the curve's final tangent
@@ -291,14 +352,15 @@ class GraphView(QGraphicsView):
         left = QPointF(tip.x() - ux * size + uy * size * 0.5, tip.y() - uy * size - ux * size * 0.5)
         right = QPointF(tip.x() - ux * size - uy * size * 0.5, tip.y() - uy * size + ux * size * 0.5)
         head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
-        head.setBrush(QColor(color))
+        head.setBrush(color)
         head.setPen(QPen(Qt.NoPen))
         head.setZValue(item.zValue())
         self._scene.addItem(head)
 
         font = QFont(self.font())
         font.setPointSize(8)
-        txt = QGraphicsSimpleTextItem(QFontMetrics(font).elidedText(label, Qt.ElideRight, LABEL_W))
+        shown = label if traffic is None else f"{label} ({traffic})"
+        txt = QGraphicsSimpleTextItem(QFontMetrics(font).elidedText(shown, Qt.ElideRight, LABEL_W))
         txt.setFont(font)
         txt.setBrush(QColor(theme.GOLD_BRIGHT if taken else theme.TEXT_DIM))
         txt.setToolTip(label)
@@ -336,7 +398,8 @@ class GraphPanel(QWidget):
         svg_btn.clicked.connect(self.export_svg)
         bar.addWidget(svg_btn)
         bar.addStretch()
-        legend = QLabel("★ start · red/amber = errors/warnings · dashed = unreachable · gold = path in Test")
+        legend = QLabel("★ start · red/amber = errors/warnings · dashed = unreachable · gold = path in Test"
+                        " · thick arrows = busy · numbered badge = comments")
         legend.setProperty("role", "subheading")
         bar.addWidget(legend)
         root.addLayout(bar)

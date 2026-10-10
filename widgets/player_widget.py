@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect, QFrame, QTextEdit, QFileDialog, QApplication,
     QSizePolicy, QLineEdit, QPlainTextEdit, QMessageBox
 )
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QPixmap
 
 from engine import TroubleshootEngine, Tree, OUTCOME_RESOLVED, rich_html
@@ -43,14 +43,27 @@ def _load_image(base_dir: str | None, rel: str) -> QPixmap | None:
     return None if pix.isNull() else pix
 
 
+SAVE_DELAY_MS = 600   # typing in notes/comment saves once the tech pauses, not per keystroke
+
+
 class PlayerWidget(QWidget):
-    def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None):
+    def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None, session_store=None):
         """
         on_step_changed: optional callback(step_id | None) fired whenever the
         engine moves — lets an embedding Editor highlight the live node.
+        session_store: optional feedback.SessionStore. When set, the result
+        screen asks "Did this solve it?" and every finished session is kept
+        in the store. The Editor's Test pane leaves it unset, so test runs
+        are never recorded.
         """
         super().__init__(parent)
         self.on_step_changed = on_step_changed
+        self.session_store = session_store
+        self._saved_session_id: str | None = None
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(SAVE_DELAY_MS)
+        self._save_timer.timeout.connect(self._save_now)
         self.engine = TroubleshootEngine(tree or Tree())
         self.base_dir: str | None = None   # folder the flow's image paths are relative to
         self._build_ui()
@@ -59,12 +72,14 @@ class PlayerWidget(QWidget):
     # ---------- public API (Editor uses these) ----------
 
     def load_tree(self, tree: Tree, base_dir: str | None = None):
+        self.flush()
         self.base_dir = base_dir
         self.engine = TroubleshootEngine(tree)
         self._reset_report_inputs()
         self._render()
 
     def restart(self):
+        self.flush()
         self.engine.reset()
         self._reset_report_inputs()
         self._render()
@@ -72,11 +87,18 @@ class PlayerWidget(QWidget):
     def _reset_report_inputs(self):
         """New session: clear ticket and notes, but keep the tech's name —
         they're the same person working through the next ticket."""
-        for w in (self.ticket_input, self.notes_input):
+        for w in (self.ticket_input, self.notes_input, self.feedback_comment):
             w.blockSignals(True)
             w.clear()
             w.blockSignals(False)
+        for b in (self.yes_btn, self.no_btn):
+            b.setChecked(False)
         self.engine.operator = self.operator_input.text()
+
+    def flush(self):
+        """Save a pending finished session now (before the engine is replaced or the app closes)."""
+        if self._save_timer.isActive():
+            self._save_now()
 
     # ---------- UI ----------
 
@@ -132,6 +154,26 @@ class PlayerWidget(QWidget):
         self.resolution_label.setVisible(False)
         self._make_rich(self.resolution_label)
         card_layout.addWidget(self.resolution_label)
+
+        # "Did this solve it?" (shown on a real ending, only when sessions are being kept)
+        self.feedback_widget = QWidget()
+        fb = QHBoxLayout(self.feedback_widget)
+        fb.setContentsMargins(0, 0, 0, 0)
+        fb.addWidget(QLabel("Did this solve it?"))
+        self.yes_btn = QPushButton("Yes")
+        self.no_btn = QPushButton("No")
+        for b in (self.yes_btn, self.no_btn):
+            b.setCheckable(True)
+            b.setFixedWidth(64)
+            fb.addWidget(b)
+        self.yes_btn.clicked.connect(lambda: self._rate(self.yes_btn, self.no_btn))
+        self.no_btn.clicked.connect(lambda: self._rate(self.no_btn, self.yes_btn))
+        self.feedback_comment = QLineEdit()
+        self.feedback_comment.setPlaceholderText("Comment (optional)")
+        self.feedback_comment.textChanged.connect(self._on_feedback_changed)
+        fb.addWidget(self.feedback_comment, 1)
+        self.feedback_widget.setVisible(False)
+        card_layout.addWidget(self.feedback_widget)
 
         # report details (hidden until finished) — flow into the report below
         self.details_widget = QWidget()
@@ -238,9 +280,11 @@ class PlayerWidget(QWidget):
                 f"color: {GREEN if ok else RED}; font-size: 16px; font-weight: 600;")
             self.resolution_label.setText(("✓  " if ok else "⚠  ") + rich_html(self.engine.resolution or ""))
             self._show_image(self.engine.resolution_image if ok else "")
+            self.feedback_widget.setVisible(self.session_store is not None and ok)
             self.details_widget.setVisible(True)
             self.report_box.setVisible(True)
             self._refresh_report()
+            self._save_now()
             self.copy_btn.setVisible(True)
             self.export_btn.setVisible(True)
         else:
@@ -248,6 +292,8 @@ class PlayerWidget(QWidget):
             self.question_label.setVisible(True)
             self.resolution_label.setVisible(False)
             self.image_label.setVisible(False)
+            self._discard_saved()   # went back from an ending: that session isn't finished any more
+            self.feedback_widget.setVisible(False)
             self.details_widget.setVisible(False)
             self.report_box.setVisible(False)
             self.copy_btn.setVisible(False)
@@ -298,6 +344,32 @@ class PlayerWidget(QWidget):
         self.engine.notes = self.notes_input.toPlainText()
         if self.engine.is_finished:
             self._refresh_report()
+            self._save_timer.start()
+
+    def _rate(self, clicked: QPushButton, other: QPushButton):
+        other.setChecked(False)   # Yes/No are mutually exclusive, and clicking the lit one again clears it
+        self._on_feedback_changed()
+
+    def _on_feedback_changed(self):
+        helpful = True if self.yes_btn.isChecked() else False if self.no_btn.isChecked() else None
+        comment = self.feedback_comment.text().strip()
+        if helpful is None and not comment:
+            self.engine.feedback = None
+        else:
+            self.engine.set_feedback(helpful, comment)
+        self._save_timer.start()
+
+    def _save_now(self):
+        self._save_timer.stop()
+        if self.session_store is not None and self.engine.is_finished:
+            if self.session_store.save(self.engine.record()):
+                self._saved_session_id = self.engine.session_id
+
+    def _discard_saved(self):
+        self._save_timer.stop()
+        if self.session_store is not None and self._saved_session_id == self.engine.session_id:
+            self.session_store.discard(self._saved_session_id)
+            self._saved_session_id = None
 
     def _refresh_report(self):
         self.report_box.setPlainText(self.engine.report_text())
