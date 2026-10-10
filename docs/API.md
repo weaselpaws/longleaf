@@ -95,13 +95,16 @@ A session is one pass through a flow — the "session record" below.
      "answers": [{"option_index": 0, "label": "No network access at all", "count": 71}]}
   ],
   "endings": [
+    {"resolution_id": "wifi_wrong_network", "count": 62, "helpful": 50, "not_helpful": 5, "no_rating": 7},
     {"step_id": "step_3", "option_index": 1, "count": 40, "helpful": 31, "not_helpful": 4, "no_rating": 5}
   ]
 }
 ```
 
-`steps` and `endings` are keyed by `step_id` + `option_index`, which is why the session
-record stores them (labels and question text are kept only so reports stay readable). The
+`steps` are keyed by `step_id` + `option_index`. An entry in `endings` is keyed by
+`resolution_id` when the session ended at a shared resolution (so every path to it is one ending,
+with the combined traffic and helpful-rate), and by `step_id` + `option_index` for inline endings
+(no `resolution_id`). That is why the session record stores them (labels and question text are kept only so reports stay readable). The
 Editor overlays this on the flow: traffic per branch, helpful-rate per ending, and the
 free-text comments (via `GET /sessions?has_feedback=true`) pinned to the step they came from.
 **Step ids are therefore identity** — don't reuse an id for a different question between
@@ -127,6 +130,10 @@ Player asks "Did this solve it?" and stores it via `set_feedback()`; today the r
   "operator": "Sam",
   "notes": "Laptop was on the guest network.",
   "feedback": {"helpful": true, "comment": "Fixed it first try."},
+  "resolution_id": "wifi_wrong_network",
+  "articles": [
+    {"article_id": "kb_wifi_profiles", "action": "attach", "at": "2026-10-06T14:03:35-05:00", "title": "Fixing saved Wi-Fi profiles"}
+  ],
   "history": [
     {"step_id": "step_1", "step_question": "What's the symptom on the device?", "option_index": 0,
      "chosen_label": "No network access at all", "answered_at": "2026-10-06T14:02:20-05:00"},
@@ -140,6 +147,34 @@ Player asks "Did this solve it?" and stores it via `set_feedback()`; today the r
 
 `outcome` is `resolved` (reached a real ending), `in_progress`, or `error` (the flow sent the
 tech to a step that doesn't exist; `resolution` then holds the explanation).
+
+`resolution_id` is the shared resolution the session ended at (see below), or `null` for an
+inline ending or a KB article used as the resolution. Analytics should group endings by it:
+two different paths that finish at the same resolution count as one ending.
+
+`articles` logs what the tech did with KB articles: `read` (opened for clarity), `attach`
+(attached to the ticket) or `resolution` (used the article as the answer; ends the session and
+`resolution` then reads `KB article: <title>`). `title` is kept so reports stay readable.
+Attaching the same article twice is logged once.
+
+## Shared resolutions and KB articles
+
+Two optional, top-level dicts in a flow, both keyed by id (ids are identity, like step ids; don't
+reuse one for something different between versions). A flow that has neither is unchanged.
+
+```json
+{
+  "resolutions": {"wifi_wrong_network": {"id": "wifi_wrong_network", "text": "Connect to the correct SSID, then retest.",
+                  "image": "", "articles": ["kb_wifi_profiles"]}},
+  "articles": {"kb_wifi_profiles": {"id": "kb_wifi_profiles", "title": "Fixing saved Wi-Fi profiles",
+               "body": "…", "url": "https://kb.example.com/wifi"}}
+}
+```
+
+- An answer ends at a shared resolution with `"resolution_id": "…"` (and no `next_id`). Any
+  number of answers, from any number of steps, can point at the same one. Its text and screenshot
+  live in one place. Inline `resolution` text still works for one-off endings.
+- Steps and resolutions list `"articles": ["…"]` ids to offer the tech while they are there.
 
 ## Issue
 
@@ -158,7 +193,7 @@ One entry of `POST /flows/validate`'s `issues` (and of the `422` body), from `Is
 |---|---|---|
 | `NO_STEPS` | error | The flow has no steps. |
 | `NO_START` | error | No valid starting step. |
-| `ID_MISMATCH` | error | A step is stored under a different id than its own `id`. |
+| `ID_MISMATCH` | error | A step, shared resolution or KB article is stored under a different id than its own `id`. |
 | `EMPTY_QUESTION` | error | A step has no question text. |
 | `DEAD_END` | error | A step has no answers. |
 | `EMPTY_LABEL` | error | An answer has no label. |
@@ -168,8 +203,14 @@ One entry of `POST /flows/validate`'s `issues` (and of the `422` body), from `Is
 | `NO_EXIT` | error | A reachable step can never reach an ending — the tech is trapped in a loop or at a missing step. |
 | `UNREACHABLE` | warning | No path from the start reaches this step. |
 | `SELF_LINK` | warning | An answer leads back to its own step. |
-| `IGNORED_RESOLUTION` | warning | An answer has both a next step and a resolution; the resolution is never shown. |
+| `IGNORED_RESOLUTION` | warning | An answer has both a next step and a resolution (inline or shared), so it is never shown; or has both inline text and a shared resolution, so the inline text is never shown. |
 | `CYCLE` | warning | Steps that can loop back on each other (a way out exists). Often intentional ("try again"). |
+| `MISSING_RESOLUTION` | error | An answer points at a shared resolution that doesn't exist. |
+| `EMPTY_RESOLUTION` | error | A shared resolution has no text. |
+| `UNUSED_RESOLUTION` | warning | A shared resolution isn't used by any answer. |
+| `MISSING_ARTICLE` | error | A step or resolution offers a KB article that doesn't exist. |
+| `EMPTY_ARTICLE` | error | A KB article has no title. |
+| `UNUSED_ARTICLE` | warning | A KB article isn't offered by any step or resolution. |
 
 ## What would have to be built
 

@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "title": "Printer Won't Print",
+  "client": "",
+  "version": "",
+  "root_id": "start",
+  "steps": {
+    "start": {
+      "id": "start",
+      "question": "What is the printer doing?",
+      "note": "Two different branches below end at the same shared fix.",
+      "image": "",
+      "options": [
+        {"label": "Nothing happens when I print", "next_id": "queued", "resolution": null, "image": ""},
+        {"label": "Printer shows as offline", "next_id": "offline", "resolution": null, "image": ""},
+        {"label": "Pages are garbled or blank", "next_id": "driver", "resolution": null, "image": ""}
+      ],
+      "articles": ["kb_printer_basics"]
+    },
+    "queued": {
+      "id": "queued",
+      "question": "Is there a job stuck at the top of the print queue?",
+      "note": "",
+      "image": "",
+      "options": [
+        {"label": "Yes", "next_id": null, "resolution": null, "image": "", "resolution_id": "restart_spooler"},
+        {"label": "No", "next_id": "offline", "resolution": null, "image": ""}
+      ]
+    },
+    "offline": {
+      "id": "offline",
+      "question": "Does Windows list the printer as online in Printers & scanners?",
+      "note": "",
+      "image": "",
+      "options": [
+        {"label": "Yes, but jobs still don't print", "next_id": null, "resolution": null, "image": "", "resolution_id": "restart_spooler"},
+        {"label": "No, it says offline", "next_id": null, "resolution": "Power cycle the printer, check its network cable or Wi-Fi, then remove and re-add it.", "image": ""}
+      ]
+    },
+    "driver": {
+      "id": "driver",
+      "question": "Did this start after a recent Windows or driver update?",
+      "note": "",
+      "image": "",
+      "options": [
+        {"label": "Yes", "next_id": null, "resolution": null, "image": "", "resolution_id": "reinstall_driver"},
+        {"label": "No", "next_id": null, "resolution": "Run a head cleaning from the printer's own menu, then print a test page.", "image": ""}
+      ]
+    }
+  },
+  "resolutions": {
+    "restart_spooler": {
+      "id": "restart_spooler",
+      "text": "Restart the Print Spooler service, clear the spool folder, then print a test page.",
+      "image": "",
+      "articles": ["kb_spooler"]
+    },
+    "reinstall_driver": {
+      "id": "reinstall_driver",
+      "text": "Remove the printer, delete its driver in Print Server Properties, then reinstall the current driver.",
+      "image": "",
+      "articles": ["kb_driver"]
+    }
+  },
+  "articles": {
+    "kb_printer_basics": {
+      "id": "kb_printer_basics",
+      "title": "Printer troubleshooting basics",
+      "body": "Check power, cabling or Wi-Fi, paper and toner first. Print a test page from the printer's own menu to separate hardware from Windows.",
+      "url": ""
+    },
+    "kb_spooler": {
+      "id": "kb_spooler",
+      "title": "Restarting the Print Spooler",
+      "body": "Open services.msc, restart Print Spooler, and clear the files in the spool folder first if a job is stuck.",
+      "url": ""
+    },
+    "kb_driver": {
+      "id": "kb_driver",
+      "title": "Reinstalling a printer driver",
+      "body": "Remove the device, open Print Server Properties, delete the driver package, then install the current driver.",
+      "url": ""
+    }
+  }
+}

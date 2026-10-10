@@ -8,9 +8,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from engine import Option, Step, Tree, TroubleshootEngine, OUTCOME_ERROR  # noqa: E402
+from engine import Option, Resolution, Step, Tree, TroubleshootEngine, OUTCOME_ERROR  # noqa: E402
 from feedback import (  # noqa: E402
-    FeedbackFormatError, FlowFeedback, SessionStore, analyze, foreign_sessions, step_feedback_text, build_bundle, load_bundle, merge_records, summarize, write_bundle,
+    FeedbackFormatError, FlowFeedback, SessionStore, analyze, ending_key, foreign_sessions, step_feedback_text, build_bundle, load_bundle, merge_records, summarize, write_bundle,
 )
 
 
@@ -203,3 +203,41 @@ def test_foreign_sessions_are_detected_by_client_then_title():
     other.client, other.title = "", "Different flow"
     assert foreign_sessions(t, [mine, run(other, [1])]) == 1
     assert "WARNING: 2 sessions came from a different client" in summarize(t, FlowFeedback(), foreign=2)
+
+
+# ---------- shared resolutions ----------
+
+def shared_flow() -> Tree:
+    """a -> b and a -> c both finish at the shared ending 'fix'; b also has an inline ending."""
+    return Tree(title="T", client="acme", version="1.0", root_id="a", resolutions={"fix": Resolution("fix", "Reseat the cable.")}, steps={
+        "a": Step("a", "Which?", [Option("left", "b"), Option("right", "c")]),
+        "b": Step("b", "Q b", [Option("done", None, resolution_id="fix"), Option("other", None, "Inline fix.")]),
+        "c": Step("c", "Q c", [Option("done", None, resolution_id="fix")]),
+    })
+
+
+def test_two_paths_to_one_shared_resolution_are_one_ending():
+    t = shared_flow()
+    recs = [run(t, [0, 0], helpful=True), run(t, [0, 0], helpful=True), run(t, [1, 0], helpful=False), run(t, [1, 0]),
+            run(t, [0, 1], helpful=True)]
+    fb = analyze(t, recs)
+    assert fb.resolved == 5
+    stat = fb.endings["fix"]                                          # keyed by resolution id, not by step/answer
+    assert (stat.count, stat.helpful, stat.unhelpful, stat.rated) == (4, 2, 1, 3)
+    assert stat.helpful_rate == pytest.approx(2 / 3)
+    assert ("b", 0) not in fb.endings and ("c", 0) not in fb.endings
+    assert fb.endings[("b", 1)].count == 1                           # inline endings keep step id + answer index
+    assert len(fb.endings) == 2
+    assert (fb.helpful, fb.unhelpful) == (3, 1)
+    # Traffic per branch is unchanged: the two paths still show separately on the graph.
+    assert fb.edge_counts[("b", 0)] == 2 and fb.edge_counts[("c", 0)] == 2
+
+
+def test_ending_key_and_text_panels_use_the_combined_stat():
+    t = shared_flow()
+    assert ending_key(t, "b", 0) == ending_key(t, "c", 0) == "fix" and ending_key(t, "b", 1) == ("b", 1)
+    fb = analyze(t, [run(t, [0, 0], helpful=False), run(t, [1, 0], helpful=False)])
+    assert "ends here, 0% helpful of 2" in step_feedback_text(t, fb, "b")
+    assert "ends here, 0% helpful of 2" in step_feedback_text(t, fb, "c")
+    out = summarize(t, fb)
+    assert "shared resolution “Reseat the cable.”: 0% helpful of 2" in out
