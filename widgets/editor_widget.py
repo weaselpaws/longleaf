@@ -26,6 +26,7 @@ from widgets.graph_view import GraphPanel
 from widgets.image_picker import ImagePicker
 from widgets.step_editor import StepEditor
 from widgets.player_widget import PlayerWidget
+from widgets.shared_content import SharedContentDialog
 
 ROOT_MARK = "★ "
 UNREACHABLE_MARK = "⚠ "
@@ -233,6 +234,10 @@ class EditorWidget(QWidget):
         feedback_menu.addAction("Clear imported feedback", self._clear_feedback)
         feedback_btn.setMenu(feedback_menu)
         title_row.addWidget(feedback_btn)
+        shared_btn = QPushButton("Shared…")
+        shared_btn.setToolTip("Shared resolutions (one ending, many paths) and KB articles")
+        shared_btn.clicked.connect(lambda: self.edit_shared_content())
+        title_row.addWidget(shared_btn)
         branding_btn = QPushButton("Branding…")
         branding_btn.clicked.connect(self._edit_branding)
         title_row.addWidget(branding_btn)
@@ -265,6 +270,7 @@ class EditorWidget(QWidget):
         self.step_editor = StepEditor()
         self.step_editor.set_all_steps_provider(self._step_choices)
         self.step_editor.set_base_dir_provider(self.base_dir)
+        self.step_editor.set_shared_content_hooks(lambda: self.tree, self.new_shared_resolution, self.edit_shared_content)
         self.step_editor.changed.connect(self._on_step_edited)
         self.step_editor.set_as_start_requested.connect(self._set_start_step)
         splitter.addWidget(self.step_editor)
@@ -490,6 +496,29 @@ class EditorWidget(QWidget):
         self.feedback_records.clear()
         self._feedback_dupes = 0
         self._after_feedback_change()
+
+    def edit_shared_content(self, select_resolution: str | None = None):
+        """Open the shared resolutions / KB articles dialog. It edits a copy, so OK
+        is one undo step and Cancel changes nothing."""
+        working = Tree.from_dict(self.tree.to_dict())
+        dlg = SharedContentDialog(working, self.base_dir, select_resolution, self)
+        if dlg.exec() == QDialog.Accepted and working.to_dict() != self.tree.to_dict():
+            self._apply_tree_edit(working)
+
+    def new_shared_resolution(self, text: str = "") -> str:
+        """Create a shared resolution (from an answer's inline text) and return its id."""
+        res = self.tree.add_resolution(text)    # recorded together with the answer's change that follows
+        return res.id
+
+    def _apply_tree_edit(self, tree: Tree):
+        """Swap in an edited copy of the flow as a single undoable edit."""
+        item = self.outline_list.currentItem()
+        selected = item.data(Qt.UserRole) if item else None
+        self.tree = tree
+        self._reload_all(fit=False)
+        if selected in self.tree.steps:
+            self.select_step(selected)
+        self._edited()
 
     def _edit_branding(self):
         dlg = BrandingDialog(self.tree.branding, self.base_dir, self)
