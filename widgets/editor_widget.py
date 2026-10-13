@@ -15,11 +15,13 @@ from PySide6.QtWidgets import (
     QFormLayout, QColorDialog, QTabWidget, QMenu
 )
 from PySide6.QtGui import QColor
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 
+from autosave import AutosaveStore, Recovery
 from feedback import FeedbackFormatError, analyze, foreign_sessions, load_bundle, merge_records, step_feedback_text, summarize
 from engine import Branding, Tree, Issue, SEVERITY_ERROR, is_hex_color
 from theme import TEXT_DIM, GOLD, GREEN, RED
+from undo_stack import UndoStack
 from widgets.graph_view import GraphPanel
 from widgets.image_picker import ImagePicker
 from widgets.step_editor import StepEditor
@@ -117,6 +119,9 @@ class BrandingDialog(QDialog):
 
 class EditorWidget(QWidget):
     dirty_changed = Signal(bool)
+    history_changed = Signal(bool, bool)   # can undo, can redo
+
+    AUTOSAVE_DELAY_MS = 2000   # quiet time after the last edit before the recovery copy is written
 
     def __init__(self, tree: Tree | None = None, parent=None):
         super().__init__(parent)
@@ -126,6 +131,12 @@ class EditorWidget(QWidget):
         self.feedback_records: dict = {}    # imported sessions, by session id
         self.feedback = None                # their analysis against the current flow
         self._feedback_dupes = 0
+        self._undo = UndoStack(self.tree.to_dict())
+        self._saved_snapshot: dict | None = self.tree.to_dict()   # what is on disk; None = nothing saved to compare with
+        self._autosave: AutosaveStore | None = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self.flush_autosave)
         self._build_ui()
         self._reload_all()
 
@@ -138,12 +149,13 @@ class EditorWidget(QWidget):
     def new_tree(self):
         if not self._confirm_discard():
             return
+        self.discard_autosave()
         self.tree = Tree()
         self.current_path = None
         step = self.tree.add_step("What's the problem?")
         self.tree.root_id = step.id
         self._reload_all()
-        self._mark_dirty(False)
+        self._reset_history()
 
     def open_tree(self):
         if not self._confirm_discard():
@@ -156,24 +168,26 @@ class EditorWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Couldn't open file", str(e))
             return
+        self.discard_autosave()
         self.current_path = path
         self._reload_all()
-        self._mark_dirty(False)
+        self._reset_history()
 
     def save_tree(self) -> bool:
         if not self.current_path:
             return self.save_tree_as()
         self.tree.save(self.current_path)
-        self._mark_dirty(False)
+        self._after_save()
         return True
 
     def save_tree_as(self) -> bool:
         path, _ = QFileDialog.getSaveFileName(self, "Save Flow As", "flow.json", "YARI Flow (*.json)")
         if not path:
             return False
+        self.discard_autosave()    # the recovery copy was filed under the old name
         self.current_path = path
         self.tree.save(path)
-        self._mark_dirty(False)
+        self._after_save()
         self._refresh_test()   # images now resolve against the new folder
         return True
 
@@ -283,7 +297,7 @@ class EditorWidget(QWidget):
     def _step_choices(self):
         return [(sid, f"{sid} — {s.question[:30] or '(no question)'}") for sid, s in self.tree.steps.items()]
 
-    def _reload_all(self):
+    def _reload_all(self, fit: bool = True):
         self.title_input.blockSignals(True)
         self.title_input.setText(self.tree.title)
         self.title_input.blockSignals(False)
@@ -293,7 +307,8 @@ class EditorWidget(QWidget):
             w.blockSignals(False)
         self._refresh_outline()
         self._refresh_test()
-        self.graph.view.fit()
+        if fit:
+            self.graph.view.fit()
 
     def _refresh_outline(self, keep_selection: bool = True):
         selected_id = None
@@ -339,17 +354,18 @@ class EditorWidget(QWidget):
         self.graph.view.set_selected(sid)
 
     def _on_step_edited(self):
-        self._mark_dirty(True)
+        item = self.outline_list.currentItem()
+        self._edited(f"step:{item.data(Qt.UserRole)}" if item else None)
         self._refresh_outline()
 
     def _on_title_changed(self, text):
         self.tree.title = text
-        self._mark_dirty(True)
+        self._edited("title")
 
     def _on_meta_changed(self):
         self.tree.client = self.client_input.text().strip()
         self.tree.version = self.version_input.text().strip()
-        self._mark_dirty(True)
+        self._edited("meta")
 
     def _update_status(self, issues: list[Issue]):
         errors = sum(i.is_error for i in issues)
@@ -374,7 +390,7 @@ class EditorWidget(QWidget):
 
     def _add_step(self):
         step = self.tree.add_step("New question")
-        self._mark_dirty(True)
+        self._edited()
         self._refresh_outline(keep_selection=False)
         for i in range(self.outline_list.count()):
             if self.outline_list.item(i).data(Qt.UserRole) == step.id:
@@ -393,12 +409,12 @@ class EditorWidget(QWidget):
         if reply != QMessageBox.Yes:
             return
         self.tree.delete_step(sid)
-        self._mark_dirty(True)
+        self._edited()
         self._refresh_outline(keep_selection=False)
 
     def _set_start_step(self, step_id):
         self.tree.root_id = step_id
-        self._mark_dirty(True)
+        self._edited()
         self._refresh_outline()
 
     def _refresh_test(self):
@@ -479,7 +495,7 @@ class EditorWidget(QWidget):
         dlg = BrandingDialog(self.tree.branding, self.base_dir, self)
         if dlg.exec() == QDialog.Accepted:
             self.tree.branding = dlg.branding()
-            self._mark_dirty(True)
+            self._edited()
             self._refresh_outline()
             self._refresh_test()
 
@@ -495,3 +511,97 @@ class EditorWidget(QWidget):
     def _mark_dirty(self, value: bool):
         self._dirty = value
         self.dirty_changed.emit(value)
+
+    # ---------- undo / redo ----------
+
+    def _edited(self, key: str | None = None):
+        """Every user edit to the flow comes through here: it is added to the
+        undo history, the dirty flag follows, and an autosave is scheduled.
+        `key` lets a burst of typing in one place count as one undo step."""
+        self._undo.record(self.tree.to_dict(), key)
+        self._sync_dirty()
+        self._emit_history()
+        self._autosave_timer.start(self.AUTOSAVE_DELAY_MS)
+
+    def _sync_dirty(self):
+        dirty = self._saved_snapshot is None or self._undo.current != self._saved_snapshot
+        if dirty != self._dirty:
+            self._mark_dirty(dirty)
+
+    def _emit_history(self):
+        self.history_changed.emit(self._undo.can_undo(), self._undo.can_redo())
+
+    def _reset_history(self):
+        """The flow in memory now matches what is on disk (new, opened or saved)."""
+        self._undo.reset(self.tree.to_dict())
+        self._saved_snapshot = self.tree.to_dict()
+        self._mark_dirty(False)
+        self._emit_history()
+
+    def _after_save(self):
+        self._saved_snapshot = self.tree.to_dict()
+        self.discard_autosave()
+        self._mark_dirty(False)
+        # Undo stays available across a save, like most editors.
+
+    def undo(self):
+        self._restore(self._undo.undo())
+
+    def redo(self):
+        self._restore(self._undo.redo())
+
+    def _restore(self, snapshot: dict | None):
+        if snapshot is None:
+            return
+        item = self.outline_list.currentItem()
+        selected = item.data(Qt.UserRole) if item else None
+        self.tree = Tree.from_dict(snapshot)
+        self._reload_all(fit=False)
+        if selected in self.tree.steps:
+            self.select_step(selected)
+        elif self.outline_list.count():
+            self.outline_list.setCurrentRow(0)
+        self._sync_dirty()
+        self._emit_history()
+        self._autosave_timer.start(self.AUTOSAVE_DELAY_MS)
+
+    # ---------- autosave / crash recovery ----------
+
+    def set_autosave_store(self, store: AutosaveStore | None):
+        self._autosave = store
+
+    def flush_autosave(self):
+        """Write the recovery copy now if there is unsaved work, else remove it."""
+        self._autosave_timer.stop()
+        if self._autosave is None:
+            return
+        if self._dirty:
+            self._autosave.write(self.current_path, self.tree.to_dict())
+        else:
+            self._autosave.discard(self.current_path)
+
+    def discard_autosave(self):
+        """The work is saved or deliberately thrown away: drop its recovery copy."""
+        self._autosave_timer.stop()
+        if self._autosave is not None:
+            self._autosave.discard(self.current_path)
+
+    def recover(self, rec: Recovery):
+        """Load a recovery copy as unsaved work (replacing whatever is open)."""
+        try:
+            tree = Tree.from_dict(rec.tree)
+        except Exception as e:
+            QMessageBox.critical(self, "Couldn't recover", str(e))
+            return False
+        self.discard_autosave()
+        self.tree = tree
+        self.current_path = rec.flow_path
+        self._reload_all()
+        self._undo.reset(self.tree.to_dict())
+        self._saved_snapshot = None      # unsaved by definition
+        self._mark_dirty(True)
+        self._emit_history()
+        if self._autosave is not None:
+            self._autosave.discard_slot(rec.slot)
+        self.flush_autosave()
+        return True

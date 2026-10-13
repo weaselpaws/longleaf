@@ -309,6 +309,99 @@ with tempfile.TemporaryDirectory() as d:
     assert ed2.feedback is None and ed2.graph.view.feedback is None and ed2.step_editor.feedback_box.isHidden()
 print("feedback: Player rating + local save, export/clear, Editor import/dedupe/overlay/step panel OK")
 
+# --- Editor: undo/redo, autosave and crash recovery ---
+import tempfile as _tf
+from PySide6.QtTest import QTest
+from editor_main import EditorWindow
+
+with _tf.TemporaryDirectory() as d:
+    auto = os.path.join(d, "auto")
+    win = EditorWindow(autosave_dir=auto)
+    win.show()
+    win.activateWindow()
+    assert QTest.qWaitForWindowActive(win)
+    ed = win.editor
+    assert not win.undo_action.isEnabled() and not win.redo_action.isEnabled() and not ed._dirty
+    first = ed.tree.root_id
+
+    ed._add_step()                                                    # a structural edit
+    assert len(ed.tree.steps) == 2 and ed._dirty and win.undo_action.isEnabled()
+    ed.undo()
+    assert len(ed.tree.steps) == 1 and not ed._dirty and win.redo_action.isEnabled()   # back to the clean state
+    ed.redo()
+    assert len(ed.tree.steps) == 2 and ed._dirty and ed.outline_list.count() == 2
+
+    before = ed.tree.title
+    ed.title_input.setFocus()
+    QTest.keyClicks(ed.title_input, "Hello")                          # typing collapses into one undo step
+    assert ed.tree.title == before + "Hello"
+    ed.undo()
+    assert ed.tree.title == before and ed.title_input.text() == before and len(ed.tree.steps) == 2
+
+    # Ctrl+Z / Ctrl+Y work while the cursor is inside a text box (one history, not per-field)
+    ed.select_step(first)
+    ed.step_editor.question_input.setFocus()
+    ed.step_editor.question_input.setPlainText("Is it plugged in?")
+    assert ed.tree.steps[first].question == "Is it plugged in?"
+    QTest.keyClick(ed.step_editor.question_input, Qt.Key_Z, Qt.ControlModifier)
+    assert ed.tree.steps[first].question != "Is it plugged in?", "Ctrl+Z did nothing inside a text box"
+    QTest.keyClick(ed.step_editor.question_input, Qt.Key_Y, Qt.ControlModifier)
+    assert ed.tree.steps[first].question == "Is it plugged in?"
+
+    ed.flush_autosave()                                               # unsaved work -> a recovery copy exists
+    (rec,) = win.autosave.pending()
+    assert rec.tree["steps"][first]["question"] == "Is it plugged in?"
+
+    # A crash: the window never closes, a new launch finds the copy and recovers it.
+    crashed = EditorWindow(autosave_dir=auto)
+    (rec2,) = crashed.autosave.pending()
+    asked = []
+    class _Box:
+        AcceptRole, DestructiveRole, RejectRole = QMessageBox.AcceptRole, QMessageBox.DestructiveRole, QMessageBox.RejectRole
+        def __init__(self, *a): self.btns = {}
+        def setWindowTitle(self, t): pass
+        def setText(self, t): asked.append(t)
+        def setInformativeText(self, t): pass
+        def addButton(self, text, role): self.btns[text] = text; return text
+        def exec(self): pass
+        def clickedButton(self): return "Recover"
+    import editor_main
+    real_box = editor_main.QMessageBox
+    editor_main.QMessageBox = _Box
+    try:
+        assert crashed.offer_recovery() is True
+    finally:
+        editor_main.QMessageBox = real_box
+    assert "closed unexpectedly" in asked[0]
+    assert crashed.editor.tree.steps[first].question == "Is it plugged in?" and crashed.editor._dirty
+    assert crashed.editor.current_path is None and not crashed.editor._undo.can_undo()
+    # the old copy is gone, a fresh one now belongs to the recovering session
+    assert [r.slot for r in crashed.autosave.pending()] == [crashed.autosave.slot_for(None)]
+
+    # Saving removes the recovery copy and leaves undo available; undoing past a save is dirty again.
+    saved = os.path.join(d, "flow.json")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (saved, ""))
+    assert crashed.editor.save_tree_as() and not crashed.editor._dirty
+    assert crashed.autosave.pending() == [] or all(r.flow_path != saved for r in crashed.autosave.pending())
+    assert os.path.exists(saved)
+    crashed.editor._add_step()
+    crashed.editor.flush_autosave()
+    assert any(r.flow_path == saved for r in crashed.autosave.pending())
+    crashed.editor.undo()
+    assert not crashed.editor._dirty
+    crashed.editor.flush_autosave()
+    assert not any(r.flow_path == saved for r in crashed.autosave.pending())
+    crashed.editor.redo()
+    crashed.editor.save_tree()
+    crashed.editor.undo()
+    assert crashed.editor._dirty                                      # differs from what is on disk now
+    crashed.editor.flush_autosave()
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Discard)
+    crashed.close()                                                   # discarded on exit -> nothing left to recover
+    assert not any(r.flow_path == saved for r in crashed.autosave.pending())
+    win.close()
+print("editor: undo/redo (incl. inside text boxes), dirty tracking, autosave, crash recovery OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

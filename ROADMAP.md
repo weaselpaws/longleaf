@@ -52,7 +52,7 @@ This is also the basis for a recurring flow-review offering on the support contr
 
 ## Anytime
 
-- Editor undo/redo and autosave / crash recovery (neither exists today).
+- ~~Editor undo/redo and autosave / crash recovery~~ — done (see README "Undo and crash recovery"). Not covered: undo of image files copied into `images/`, and recovery when two Editors run at once.
 - One-click "new step from this answer" in the step editor (today: add a step, then pick it from a dropdown).
 - AI-drafted first pass from a client's SOP: paste a document, get draft flow JSON, then validate and hand-edit. Internal-only, so no client data path.
 - Duplicate step, step templates, flow version shown in the Player's about box.
