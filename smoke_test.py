@@ -402,6 +402,108 @@ with _tf.TemporaryDirectory() as d:
     win.close()
 print("editor: undo/redo (incl. inside text boxes), dirty tracking, autosave, crash recovery OK")
 
+# --- Editor: shared resolutions and KB articles ---
+from widgets.option_row import OptionRow, _NEW
+from widgets.shared_content import SharedContentDialog
+
+# Loading an answer that uses a shared resolution must not alter it (same trap the StepEditor test guards).
+_t = Tree.load("examples/shared_resolutions_and_kb.json")
+_before = _t.to_dict()
+_ed = EditorWidget(_t)
+for _sid in _t.steps:
+    _ed.select_step(_sid)
+assert _t.to_dict() == _before, "selecting steps changed the flow"
+_ed.select_step("queued")
+_row = _ed.step_editor.options_layout.itemAt(0).widget()
+assert isinstance(_row, OptionRow) and _row.ending_combo.currentData() == "restart_spooler"
+assert _row.resolution_input.isHidden() and not _row.shared_preview.isHidden()
+assert "Print Spooler" in _row.shared_preview.text()
+assert _ed.step_editor.articles_label.text() == "None"
+_ed.select_step("start")
+assert "Printer troubleshooting basics" in _ed.step_editor.articles_label.text()
+
+# An answer switched to a next step drops its resolution_id, so no IGNORED_RESOLUTION warning appears.
+_ed.select_step("queued")
+_row = _ed.step_editor.options_layout.itemAt(0).widget()
+_row.target_combo.setCurrentIndex(_row.target_combo.findData("offline"))
+assert _t.steps["queued"].options[0].resolution_id is None and _t.steps["queued"].options[0].next_id == "offline"
+assert "IGNORED_RESOLUTION" not in {i.code for i in _t.check()}
+_ed.undo()
+assert _ed.tree.steps["queued"].options[0].resolution_id == "restart_spooler"          # and undo brings it back
+
+# Pointing an answer at a different shared resolution, and back to inline text.
+_ed.select_step("driver")
+_row = _ed.step_editor.options_layout.itemAt(1).widget()                               # "No" -> inline text
+assert _row.ending_combo.currentData() is None and not _row.resolution_input.isHidden()
+_row.ending_combo.setCurrentIndex(_row.ending_combo.findData("restart_spooler"))
+_o = _ed.tree.steps["driver"].options[1]
+assert (_o.resolution_id, _o.resolution) == ("restart_spooler", None) and _o.next_id is None
+_ed.select_step("driver")
+_row = _ed.step_editor.options_layout.itemAt(1).widget()
+_row.ending_combo.setCurrentIndex(0)                                                   # back to inline: the box is empty (text was replaced by the shared one)
+assert _ed.tree.steps["driver"].options[1].resolution_id is None
+_ed.select_step("driver")
+_row = _ed.step_editor.options_layout.itemAt(1).widget()
+_row.resolution_input.setPlainText("Run a head cleaning.")
+assert _ed.tree.steps["driver"].options[1].resolution == "Run a head cleaning."
+
+# "New shared resolution from this text": the inline text moves into a new shared resolution.
+_ed.select_step("offline")
+_row = _ed.step_editor.options_layout.itemAt(1).widget()
+_row.resolution_input.setPlainText("Power cycle the printer.")
+_row.ending_combo.setCurrentIndex(_row.ending_combo.findData(_NEW))
+_o = _ed.tree.steps["offline"].options[1]
+assert _o.resolution_id in _ed.tree.resolutions and _o.resolution is None
+assert _ed.tree.resolutions[_o.resolution_id].text == "Power cycle the printer."
+assert not [i for i in _ed.tree.check() if i.is_error]
+_ed.undo()
+assert _ed.tree.steps["offline"].options[1].resolution_id is None and not [r for r in _ed.tree.resolutions if r.startswith("res_")]   # created + assigned = one undo step
+
+# The dialog edits a copy: Cancel changes nothing, OK is a single undo step.
+_ed2 = EditorWidget(Tree.load("examples/shared_resolutions_and_kb.json"))
+_snap = _ed2.tree.to_dict()
+_copy = Tree.from_dict(_snap)
+_dlg = SharedContentDialog(_copy, lambda: None)
+_rt = _dlg.resolutions_tab
+_rt.list.setCurrentRow(0)
+_rt.text_input.setPlainText("Edited fix.")
+_rt._add()
+_rt.text_input.setPlainText("Brand new ending.")
+_at = _dlg.articles_tab
+_at._add()
+_at.title_input.setText("New KB")
+_at.body_input.setPlainText("Body")
+assert _copy.resolutions["restart_spooler"].text == "Edited fix." and "res_1" in _copy.resolutions and "kb_1" in _copy.articles
+assert _ed2.tree.to_dict() == _snap                                                    # original untouched until OK
+_ed2._apply_tree_edit(_copy)
+assert _ed2.tree.resolutions["restart_spooler"].text == "Edited fix." and _ed2._dirty
+_ed2.undo()
+assert _ed2.tree.to_dict() == _snap and not _ed2._dirty                                # one step back, clean again
+# deleting a resolution unlinks the answers that used it; deleting an article removes it everywhere
+_copy2 = Tree.from_dict(_snap)
+_dlg2 = SharedContentDialog(_copy2, lambda: None)
+_orig_q = QMessageBox.question
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+_dlg2.resolutions_tab.list.setCurrentRow(0)
+_dlg2.resolutions_tab._delete()
+_dlg2.articles_tab.list.setCurrentRow(0)
+_dlg2.articles_tab._delete()
+QMessageBox.question = _orig_q
+assert "restart_spooler" not in _copy2.resolutions and len(_copy2.articles) == 2
+assert all(o.resolution_id != "restart_spooler" for st in _copy2.steps.values() for o in st.options)
+
+# Choosing KB articles on a step (the picker dialog stubbed to tick one more).
+_ed3 = EditorWidget(Tree.load("examples/shared_resolutions_and_kb.json"))
+_ed3.select_step("queued")
+import widgets.step_editor as _se
+_real_choose = _se.choose_articles
+_se.choose_articles = lambda parent, tree, selected: [*selected, "kb_spooler"]
+_ed3.step_editor._choose_articles()
+_se.choose_articles = _real_choose
+assert _ed3.tree.steps["queued"].articles == ["kb_spooler"] and "Restarting the Print Spooler" in _ed3.step_editor.articles_label.text()
+assert _ed3._dirty
+print("editor: shared resolutions + KB articles (assign, create from text, switch to next step, dialog edit/undo/delete, step articles) OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

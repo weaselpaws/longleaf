@@ -97,8 +97,16 @@ edited in one place. Steps and resolutions can also offer **KB articles**
 read, attach to the ticket, or use as the resolution. Both are optional and
 flows without them are unchanged. See `examples/shared_resolutions_and_kb.json`
 and the "Shared resolutions and KB articles" section of
-[`docs/API.md`](docs/API.md). Engine support is in; Player and Editor screens
-for them are not built yet.
+[`docs/API.md`](docs/API.md).
+
+In the Editor, **Shared…** (title bar) opens the dialog to create, edit and delete
+shared resolutions (text, screenshot, offered articles) and KB articles; Cancel
+changes nothing and OK is one undo step. On an answer that ends the flow, the
+**ending** drop-down chooses "Written here" (inline text) or a shared resolution
+(with a preview and **Edit shared…**), or **+ New shared resolution from this
+text…** to promote what you just typed. Pointing an answer at a next step clears
+its shared resolution. Each step has **KB articles offered here → Choose…**.
+Player screens for articles are not built yet.
 
 ### Session records and reports
 
