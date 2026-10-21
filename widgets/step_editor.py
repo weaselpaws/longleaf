@@ -11,6 +11,7 @@ from PySide6.QtCore import Signal
 from engine import Step, Option
 from widgets.image_picker import ImagePicker
 from widgets.option_row import OptionRow
+from widgets.shared_content import article_summary, choose_articles, resolution_label
 
 
 class StepEditor(QWidget):
@@ -22,6 +23,9 @@ class StepEditor(QWidget):
         self.step: Step | None = None
         self.all_steps_provider = lambda: []  # callback returning [(id, label), ...]
         self.base_dir_provider = lambda: None  # callback returning the flow file's folder, or None if unsaved
+        self.tree_provider = lambda: None      # callback returning the Tree (for shared resolutions / KB articles)
+        self.new_resolution = lambda text: None   # callback: create a shared resolution from text, return its id
+        self.edit_resolution = lambda rid: None   # callback: open the shared-content dialog on a resolution
         self._build_ui()
         self.set_step(None)
 
@@ -55,6 +59,16 @@ class StepEditor(QWidget):
         self.image_picker = ImagePicker("No screenshot", base_dir_provider=lambda: self.base_dir_provider())
         self.image_picker.changed.connect(self._on_image_changed)
         root.addWidget(self.image_picker)
+
+        articles_row = QHBoxLayout()
+        articles_row.addWidget(QLabel("KB articles offered here:"))
+        self.articles_label = QLabel("None")
+        self.articles_label.setWordWrap(True)
+        articles_row.addWidget(self.articles_label, 1)
+        self.articles_btn = QPushButton("Choose…")
+        self.articles_btn.clicked.connect(self._choose_articles)
+        articles_row.addWidget(self.articles_btn)
+        root.addLayout(articles_row)
 
         options_header = QHBoxLayout()
         options_header.addWidget(QLabel("Answers:"))
@@ -92,6 +106,25 @@ class StepEditor(QWidget):
     def set_base_dir_provider(self, fn):
         self.base_dir_provider = fn
 
+    def set_shared_content_hooks(self, tree_provider, new_resolution, edit_resolution):
+        self.tree_provider, self.new_resolution, self.edit_resolution = tree_provider, new_resolution, edit_resolution
+
+    def _show_articles(self):
+        tree = self.tree_provider()
+        ids = self.step.articles if self.step else []
+        self.articles_label.setText(article_summary(tree, ids) if tree else "None")
+        self.articles_btn.setEnabled(self.step is not None and tree is not None)
+
+    def _choose_articles(self):
+        tree = self.tree_provider()
+        if not self.step or tree is None:
+            return
+        picked = choose_articles(self, tree, self.step.articles)
+        if picked is not None and picked != self.step.articles:
+            self.step.articles = picked
+            self._show_articles()
+            self.changed.emit()
+
     def set_step(self, step: Step | None):
         self.step = step
         enabled = step is not None
@@ -109,6 +142,7 @@ class StepEditor(QWidget):
         self.note_input.blockSignals(False)
 
         self.step_id_label.setText(f"Editing: {step.id}" if step else "No step selected")
+        self._show_articles()
         self._rebuild_options()
 
     def refresh_target_choices(self):
@@ -131,8 +165,14 @@ class StepEditor(QWidget):
             return
 
         choices = self._other_step_choices()
+        tree = self.tree_provider()
+        resolutions = [(rid, resolution_label(r.text, rid)) for rid, r in tree.resolutions.items()] if tree else []
+        shared_text = (lambda rid: tree.resolutions[rid].text if tree and rid in tree.resolutions else "")
         for option in self.step.options:
-            row = OptionRow(option, choices, base_dir_provider=lambda: self.base_dir_provider())
+            row = OptionRow(option, choices, base_dir_provider=lambda: self.base_dir_provider(),
+                            resolution_choices=resolutions, shared_text=shared_text,
+                            new_resolution=lambda text: self.new_resolution(text),
+                            edit_resolution=lambda rid: self.edit_resolution(rid))
             row.changed.connect(self.changed.emit)
             row.remove_requested.connect(self._remove_option)
             self.options_layout.insertWidget(self.options_layout.count() - 1, row)
