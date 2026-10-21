@@ -542,7 +542,7 @@ def test_article_as_resolution_finishes_the_session_and_go_back_undoes_only_that
     assert [x.action for x in e.record().articles] == [ARTICLE_ATTACH, ARTICLE_RESOLUTION]
     e.go_back()
     assert [x.action for x in e.record().articles] == [ARTICLE_ATTACH]
-    assert not e.is_finished
+    assert not e.is_finished and e.current_id == "b" and len(e.history) == 1   # back where the article was used
     with pytest.raises(ValueError):
         e.use_article_as_resolution("nope")
 
@@ -581,3 +581,29 @@ def test_old_session_records_without_the_new_fields_still_load():
 def test_malformed_shared_content_raises_flow_format_error(bad):
     with pytest.raises(FlowFormatError):
         Tree.from_dict(bad)
+
+
+def test_back_from_an_article_resolution_works_at_the_first_step_and_after_an_ending():
+    e = TroubleshootEngine(kb_tree())
+    assert not e.can_go_back()
+    e.use_article_as_resolution("kb_net")                      # straight from the start step
+    assert e.is_finished and e.can_go_back()
+    e.go_back()
+    assert e.current_id == "a" and not e.is_finished and not e.can_go_back() and e.outcome == OUTCOME_IN_PROGRESS
+    e.choose(e.current_step.options[0])
+    e.choose(e.current_step.options[0])                        # a real ending, rated
+    e.set_feedback(False, "nope")
+    e.use_article_as_resolution("kb_cable")                    # replaced by an article
+    assert e.resolution.startswith("KB article: Cable seating") and e.resolution_id is None and e.feedback is None
+    e.go_back()                                                # undoes only the article
+    assert (e.resolution, e.resolution_id, e.feedback) == ("Reseat the cable.", "fix", {"helpful": False, "comment": "nope"})
+    assert [x.action for x in e.record().articles] == []
+    e.go_back()                                                # now the normal back: to step b
+    assert e.current_id == "b" and not e.is_finished
+
+
+def test_attach_to_ticket_text_prefers_the_link_over_the_body():
+    assert Article("a", "Wi-Fi profiles", "Forget the network, rejoin.", "https://kb.example.com/wifi").ticket_text() == \
+        "Wi-Fi profiles\nhttps://kb.example.com/wifi"
+    assert Article("a", "Wi-Fi profiles", "Forget the network, rejoin.").ticket_text() == "Wi-Fi profiles\nForget the network, rejoin."
+    assert Article("a", "Just a title").ticket_text() == "Just a title"

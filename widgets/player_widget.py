@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QPixmap
 
-from engine import TroubleshootEngine, Tree, OUTCOME_RESOLVED, rich_html
+from engine import ARTICLE_ATTACH, ARTICLE_READ, TroubleshootEngine, Tree, OUTCOME_RESOLVED, rich_html
 from theme import TEXT_DIM, GREEN, RED
 from widgets.answer_button import AnswerButton
+from widgets.article_panel import ArticlePanel
 
 # (file-dialog filter, extension) pairs; extension doubles as the SessionRecord.render() format.
 EXPORT_FORMATS = [
@@ -154,6 +155,13 @@ class PlayerWidget(QWidget):
         self.resolution_label.setVisible(False)
         self._make_rich(self.resolution_label)
         card_layout.addWidget(self.resolution_label)
+
+        # KB articles offered at this step / ending
+        self.articles_panel = ArticlePanel()
+        self.articles_panel.read.connect(lambda aid: self._article_logged(aid, ARTICLE_READ))
+        self.articles_panel.attach.connect(self._attach_article)
+        self.articles_panel.use.connect(self._use_article)
+        card_layout.addWidget(self.articles_panel)
 
         # "Did this solve it?" (shown on a real ending, only when sessions are being kept)
         self.feedback_widget = QWidget()
@@ -315,11 +323,38 @@ class PlayerWidget(QWidget):
                     btn.clicked.connect(lambda _, o=option: self._choose(o))
                     self.answers_layout.addWidget(btn)
 
+        self._refresh_articles()
+
         if animate:
             self._fade_in()
 
         if self.on_step_changed:
             self.on_step_changed(self.engine.current_id)
+
+    def _refresh_articles(self):
+        attached = {e.article_id for e in self.engine.article_events if e.action == ARTICLE_ATTACH}
+        # Using an article as the resolution only makes sense while still working a step; at an
+        # ending the ending itself is the answer and its articles are for reading and attaching.
+        self.articles_panel.set_articles(self.engine.articles_here(), attached, can_use=not self.engine.is_finished)
+
+    def _article_logged(self, article_id: str, action: str):
+        """A read or attach was logged on the engine; keep the report and saved session in step."""
+        self.engine.record_article(article_id, action)
+        if self.engine.is_finished:
+            self._refresh_report()
+            self._save_timer.start()
+
+    def _attach_article(self, article_id: str):
+        art = self.engine.tree.articles.get(article_id)
+        if art is None:
+            return
+        QApplication.clipboard().setText(art.ticket_text())
+        self._article_logged(article_id, ARTICLE_ATTACH)
+        self.articles_panel.mark_attached(article_id)
+
+    def _use_article(self, article_id: str):
+        self.engine.use_article_as_resolution(article_id)
+        self._render()
 
     def _fade_in(self):
         anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
