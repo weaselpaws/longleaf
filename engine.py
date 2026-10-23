@@ -88,6 +88,7 @@ class Step:
     note: str = ""  # optional tech-facing hint shown under the question
     image: str = ""  # optional screenshot shown under the question (path relative to the flow file)
     articles: list[str] = field(default_factory=list)  # KB article ids offered while on this step
+    tags: list[str] = field(default_factory=list)      # keywords the Player's search matches (e.g. "wifi", "blue screen")
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +98,7 @@ class Step:
             "image": self.image,
             "options": [o.to_dict() for o in self.options],
             **({"articles": list(self.articles)} if self.articles else {}),
+            **({"tags": list(self.tags)} if self.tags else {}),
         }
 
     @staticmethod
@@ -110,6 +112,7 @@ class Step:
             image=d.get("image") or "",
             options=[Option.from_dict(o) for o in d.get("options", [])],
             articles=_id_list(d.get("articles"), f"Step '{d.get('id') or default_id}' articles"),
+            tags=_id_list(d.get("tags"), f"Step '{d.get('id') or default_id}' tags"),
         )
 
 
@@ -805,6 +808,8 @@ class SessionRecord:
     resolution_id: Optional[str] = None   # the shared Resolution reached, if the ending was one
     articles: list[ArticleEvent] = field(default_factory=list)   # KB articles read / attached / used
     rejected_resolutions: list[RejectedResolution] = field(default_factory=list)   # endings the tech marked "didn't work"
+    entry_step_id: Optional[str] = None   # the step the session began at when the tech searched; None = the start step
+    search_query: str = ""                # what they typed to get there
     schema_version: int = SCHEMA_VERSION
 
     # ---- serialization ----
@@ -825,6 +830,8 @@ class SessionRecord:
             "resolution_id": self.resolution_id,
             "articles": [a.to_dict() for a in self.articles],
             "rejected_resolutions": [r.to_dict() for r in self.rejected_resolutions],
+            "entry_step_id": self.entry_step_id,
+            "search_query": self.search_query,
             "history": [h.to_dict() for h in self.history],
         }
 
@@ -848,6 +855,8 @@ class SessionRecord:
             resolution_id=d.get("resolution_id"),
             articles=[ArticleEvent.from_dict(a) for a in d.get("articles", [])],
             rejected_resolutions=[RejectedResolution.from_dict(r) for r in d.get("rejected_resolutions", [])],
+            entry_step_id=d.get("entry_step_id") or None,
+            search_query=d.get("search_query", "") or "",
             schema_version=d.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -869,6 +878,7 @@ class SessionRecord:
             ("Client", self.flow_client),
             ("Ticket", self.ticket_ref),
             ("Technician", self.operator),
+            ("Searched for", self.search_query),
             ("KB attached", "; ".join(a.title or a.article_id for a in self.articles if a.action == ARTICLE_ATTACH)),
             ("Tried, didn't work", "; ".join(" ".join(r.text.split())[:80] for r in self.rejected_resolutions)),
             ("Started", _fmt_stamp(self.started_at)),
@@ -968,6 +978,8 @@ class TroubleshootEngine:
         self.article_events = []
         self.rejected: list[RejectedResolution] = []
         self.escalated = False
+        self.entry_step_id: Optional[str] = None
+        self.search_query = ""
         self._before_override: Optional[dict] = None
         self.outcome = OUTCOME_IN_PROGRESS
         self.session_id = str(uuid.uuid4())
@@ -1040,7 +1052,7 @@ class TroubleshootEngine:
                 self.resolution_articles = list(ending.articles)
 
     def can_go_back(self) -> bool:
-        return len(self.history) > 0 or self._before_override is not None
+        return len(self.history) > 0 or self._before_override is not None or self.entry_step_id is not None
 
     def go_back(self):
         """Undo the last answer and return to the step it was asked from.
@@ -1054,6 +1066,9 @@ class TroubleshootEngine:
             self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
             return
         if not self.history:
+            if self.entry_step_id is not None:     # Back from a step reached by search: return to the start step
+                self.entry_step_id, self.search_query = None, ""
+                self.current_id = self.tree.root_id or None
             return
         entry = self.history.pop()
         self.current_id = entry.step_id
@@ -1066,6 +1081,23 @@ class TroubleshootEngine:
         self.outcome = OUTCOME_IN_PROGRESS
         self.finished_at = None
         self.feedback = None
+
+    # ---------- starting from a search ----------
+
+    def can_start_at(self) -> bool:
+        return not self.history and not self.is_finished and self.entry_step_id is None and self.current_id == (self.tree.root_id or None)
+
+    def start_at(self, step_id: str, query: str = ""):
+        """Begin the session at `step_id` (a search result) instead of the start step. Only possible
+        before the first answer. The record keeps the step and the query, and Back returns to the start step."""
+        if not self.can_start_at():
+            raise ValueError("A session can only jump to a step before the first answer.")
+        if step_id not in self.tree.steps:
+            raise ValueError(f"No step {step_id!r} in this flow.")
+        self.search_query = query.strip()
+        if step_id != self.tree.root_id:
+            self.entry_step_id = step_id
+            self.current_id = step_id
 
     # ---------- rejected endings ----------
 
@@ -1206,6 +1238,8 @@ class TroubleshootEngine:
             resolution_id=self.resolution_id,
             articles=list(self.article_events),
             rejected_resolutions=list(self.rejected),
+            entry_step_id=self.entry_step_id,
+            search_query=self.search_query,
         )
 
     def report_text(self) -> str:

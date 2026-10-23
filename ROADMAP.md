@@ -20,7 +20,7 @@ The MVP is stages 1 and 2: a Player that finds the right card fast and logs the 
 
 | MVP item | Status | Where it stands |
 |---|---|---|
-| **Search** over card tags and keywords, landing in the right node instead of the root | 🔜 | `tags` on steps and a search box on the Player start screen. Nothing built yet. |
+| **Search** over card tags and keywords, landing in the right node instead of the root | ✅ | `tags` on steps (Editor field) and a search box on the Player start screen that jumps to the best-matching step; the query and landing step are logged. Plain word matching; no typo tolerance yet, and no analytics on what techs search for. |
 | **Notepad** for extra ticket notes, exported under "additional notes" | 🟡 | The result screen already takes ticket, technician and notes and exports them in all four formats. Missing: a notepad available *during* the flow, and the "additional notes" heading. |
 | **One-click outcome logging**: resolved or not, optional ticket or call ID, to a plain log file | 🟡 | "Did this solve it?" Yes/No with a comment, ticket reference, and every finished session saved locally and exportable. Missing: the single append-only log file behind one swappable function (today it is one JSON file per session), and logging an unresolved or abandoned session. |
 | **Roles / profiles**: a user can have several roles, each deciding which tools appear beside the flow | 🔜 | Not started. Keep roles as simple config files. |

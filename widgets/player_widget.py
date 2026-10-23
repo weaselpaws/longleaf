@@ -21,6 +21,7 @@ from PySide6.QtGui import QPixmap
 from engine import (ARTICLE_ATTACH, ARTICLE_READ, OPTION_OK, OPTION_TRIED, TroubleshootEngine, Tree, OUTCOME_RESOLVED,
                     rich_html)
 from theme import TEXT_DIM, GREEN, RED
+from search import search
 from widgets.answer_button import AnswerButton
 from widgets.article_panel import ArticlePanel
 
@@ -49,7 +50,8 @@ SAVE_DELAY_MS = 600   # typing in notes/comment saves once the tech pauses, not 
 
 
 class PlayerWidget(QWidget):
-    def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None, session_store=None):
+    def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None, session_store=None,
+                 autofocus_search: bool = False):
         """
         on_step_changed: optional callback(step_id | None) fired whenever the
         engine moves — lets an embedding Editor highlight the live node.
@@ -57,9 +59,13 @@ class PlayerWidget(QWidget):
         screen asks "Did this solve it?" and every finished session is kept
         in the store. The Editor's Test pane leaves it unset, so test runs
         are never recorded.
+        autofocus_search: put the cursor in the search box whenever a session starts. The Player app
+        turns this on; the Editor's Test pane leaves it off so it never steals focus from the author.
         """
         super().__init__(parent)
         self.on_step_changed = on_step_changed
+        self.autofocus_search = autofocus_search
+        self._hits = []
         self.session_store = session_store
         self._saved_session_id: str | None = None
         self._save_timer = QTimer(self)
@@ -79,12 +85,18 @@ class PlayerWidget(QWidget):
         self.engine = TroubleshootEngine(tree)
         self._reset_report_inputs()
         self._render()
+        self._focus_search()
 
     def restart(self):
         self.flush()
         self.engine.reset()
         self._reset_report_inputs()
         self._render()
+        self._focus_search()
+
+    def _focus_search(self):
+        if self.autofocus_search and not self.search_input.isHidden():
+            self.search_input.setFocus()
 
     def _reset_report_inputs(self):
         """New session: clear ticket and notes, but keep the tech's name —
@@ -95,6 +107,9 @@ class PlayerWidget(QWidget):
             w.blockSignals(False)
         for b in (self.yes_btn, self.no_btn):
             b.setChecked(False)
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
         self.engine.operator = self.operator_input.text()
 
     def flush(self):
@@ -139,6 +154,20 @@ class PlayerWidget(QWidget):
         self.note_label.setVisible(False)
         self._make_rich(self.note_label)
         card_layout.addWidget(self.note_label)
+
+        # search box (start screen only): type what you are seeing, land on the right step
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search — type what you're seeing (e.g. “wifi keeps dropping”)")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(lambda _t: self._render(animate=False))
+        self.search_input.returnPressed.connect(self._pick_top_result)
+        self.search_input.setVisible(False)
+        card_layout.addWidget(self.search_input)
+        self.search_status = QLabel("")
+        self.search_status.setProperty("role", "note")
+        self.search_status.setWordWrap(True)
+        self.search_status.setVisible(False)
+        card_layout.addWidget(self.search_status)
 
         self.tried_label = QLabel("")
         self.tried_label.setProperty("role", "note")
@@ -312,6 +341,8 @@ class PlayerWidget(QWidget):
             self.feedback_widget.setVisible(self.session_store is not None and ok)
             self.reject_btn.setVisible(self.engine.can_reject())
             self.escalate_btn.setVisible(False)
+            self.search_input.setVisible(False)
+            self.search_status.setVisible(False)
             self._show_tried()
             self.details_widget.setVisible(True)
             self.report_box.setVisible(True)
@@ -333,8 +364,11 @@ class PlayerWidget(QWidget):
             self.copy_btn.setVisible(False)
             self.export_btn.setVisible(False)
 
+            searching = self._update_search_row()
             if step is None:
                 self.question_label.setText("This flow has no steps yet.")
+            elif searching:
+                self._show_search_results()
             else:
                 self.question_label.setText(rich_html(step.question))
                 self._show_image(step.image)
@@ -363,6 +397,56 @@ class PlayerWidget(QWidget):
         if self.on_step_changed:
             self.on_step_changed(self.engine.current_id)
 
+    def _update_search_row(self) -> bool:
+        """Show the search box on the start screen (only there, and only when the flow has somewhere
+        to jump to). Returns True when it holds a query, so results replace the question."""
+        searchable = self.engine.can_start_at() and len(self.engine.tree.steps) >= 2
+        self.search_input.setVisible(searchable)
+        if not searchable:
+            if self.search_input.text():
+                self.search_input.blockSignals(True)
+                self.search_input.clear()
+                self.search_input.blockSignals(False)
+            self.search_status.setVisible(False)
+            self._hits = []
+            return False
+        searching = bool(self.search_input.text().strip())
+        self.search_status.setVisible(searching)
+        if not searching:
+            self._hits = []
+        return searching
+
+    def _show_search_results(self):
+        self.question_label.setVisible(False)
+        self.note_label.setVisible(False)
+        self.image_label.setVisible(False)
+        query = self.search_input.text()
+        tree = self.engine.tree
+        self._hits = search(tree, query)
+        if not self._hits:
+            self.search_status.setText("No matches. Clear the search to start from the first question.")
+            return
+        self.search_status.setText("Best matches — pick one to jump straight there:")
+        for hit in self._hits:
+            question = " ".join(tree.steps[hit.step_id].question.split()) or hit.step_id
+            question = question if len(question) <= 58 else question[:57] + "…"
+            btn = AnswerButton(f"{question}  ·  {hit.why}")
+            btn.setToolTip(" ".join(tree.steps[hit.step_id].question.split()))
+            btn.clicked.connect(lambda _, h=hit: self._pick_result(h))
+            self.answers_layout.addWidget(btn)
+
+    def _pick_top_result(self):
+        if getattr(self, "_hits", None):
+            self._pick_result(self._hits[0])
+
+    def _pick_result(self, hit):
+        query = self.search_input.text()
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+        self.engine.start_at(hit.step_id, query)
+        self._render()
+
     def _show_tried(self):
         rejected = self.engine.rejected
         if not rejected:
@@ -382,6 +466,9 @@ class PlayerWidget(QWidget):
         self._render()
 
     def _refresh_articles(self):
+        if not self.search_input.isHidden() and self.search_input.text().strip():   # results on screen: no articles yet
+            self.articles_panel.set_articles([], set(), can_use=False)
+            return
         attached = {e.article_id for e in self.engine.article_events if e.action == ARTICLE_ATTACH}
         # Using an article as the resolution only makes sense while still working a step; at an
         # ending the ending itself is the answer and its articles are for reading and attaching.
