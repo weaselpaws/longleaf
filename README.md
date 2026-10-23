@@ -157,6 +157,26 @@ anything still there at the next launch means the Editor died, and it offers to
 recover it. Image files you picked are already copied into `images/`, so they
 survive a crash. (`autosave.py`, GUI-free.)
 
+## Outcome log (Player)
+
+Beside the full session files, the Player keeps one plain log per client:
+`outcome-log.jsonl` in the app-data folder (`logs/<client>/`), one JSON event per
+line, append-only. It records that a session started, each answer (step id and
+answer index), endings the tech rejected, how the session finished (resolved or
+not from the "Did this solve it?" answer, the optional ticket or call id, an
+escalation, a KB article used as the answer), a rating or ticket change after the
+fact, going Back from an ending, **abandoned sessions** (Start Over, another flow,
+or closing the app part-way), and searches that matched nothing. **File → Export
+Outcome Log…** copies it for the client to send back; **Clear Saved Sessions…**
+removes it too. Events hold ids and outcomes, not notes, comments, names or fix
+wording; the ticket id and search query are what a tech typed, so treat the file
+like the session files. Every event leaves through one function
+(`outcome_log.OutcomeLog.emit`, passed to the `PlayerWidget` as `event_sink`), so
+swapping the file for an HTTPS call later is one change. `outcome_log.fold_sessions`
+turns the stream into one summary per session (resolved / not resolved / finished /
+abandoned / in progress) for the analytics viewer. Event formats are in
+[`docs/API.md`](docs/API.md#outcome-log).
+
 ## Search (Player)
 
 A step can have **search tags** (Editor → step → "Search tags", comma-separated).

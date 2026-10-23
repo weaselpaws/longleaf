@@ -5,6 +5,7 @@ The version that ships to field techs: opens a flow file and walks it.
 No editing capability at all — just Play, answer, get a report.
 """
 
+import shutil
 import sys
 import os
 import re
@@ -17,6 +18,7 @@ from PySide6.QtGui import QAction
 
 from engine import Tree
 from feedback import SessionStore, write_bundle
+from outcome_log import OutcomeLog
 from theme import apply_theme
 from widgets.player_widget import PlayerWidget
 
@@ -27,6 +29,15 @@ DATA_DIR_ENV = "LONGLEAF_DATA_DIR"   # override where finished sessions are kept
 def _data_dir() -> Path:
     override = os.environ.get(DATA_DIR_ENV)
     return Path(override) if override else Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
+
+
+def _client_slug(tree: Tree) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", tree.client).strip("-") or "default"
+
+
+def _log_for(tree: Tree) -> OutcomeLog:
+    """The append-only outcome log, one file per client next to (not inside) the session files."""
+    return OutcomeLog(_data_dir() / "logs" / _client_slug(tree))
 
 
 def _store_for(tree: Tree) -> SessionStore:
@@ -50,6 +61,7 @@ class PlayerWindow(QMainWindow):
         self.player = PlayerWidget(Tree(), autofocus_search=True)
         self.setCentralWidget(self.player)
         self.store: SessionStore | None = None
+        self.outcome_log: OutcomeLog | None = None
 
         self._build_menu()
         self._load_default_flow()
@@ -66,6 +78,9 @@ class PlayerWindow(QMainWindow):
         export_action = QAction("&Export Feedback…", self)
         export_action.triggered.connect(self._export_feedback)
         menu.addAction(export_action)
+        log_action = QAction("Export &Outcome Log…", self)
+        log_action.triggered.connect(self._export_log)
+        menu.addAction(log_action)
         clear_action = QAction("&Clear Saved Sessions…", self)
         clear_action.triggered.connect(self._clear_sessions)
         menu.addAction(clear_action)
@@ -95,8 +110,11 @@ class PlayerWindow(QMainWindow):
             QMessageBox.critical(self, "Couldn't open flow", str(e))
             return
         self.player.flush()                       # finish saving the old flow's session before switching stores
+        self.player.end_session()                 # ...and log it as abandoned if it was part-way, before the sink changes
         self.store = _store_for(tree)
+        self.outcome_log = _log_for(tree)
         self.player.session_store = self.store
+        self.player.event_sink = self.outcome_log.emit
         self.player.load_tree(tree, base_dir=os.path.dirname(os.path.abspath(path)))
         brand = tree.branding
         apply_theme(QApplication.instance(), brand.accent)   # empty accent -> stock gold
@@ -126,21 +144,47 @@ class PlayerWindow(QMainWindow):
             f"Send this file to whoever maintains this flow. It includes the tickets, notes and "
             f"comments entered on those sessions.")
 
+    def _export_log(self):
+        self.player.flush()
+        if not self.outcome_log or not self.outcome_log.path.exists() or not self.outcome_log.count():
+            QMessageBox.information(self, "Export Outcome Log", "Nothing has been logged yet.")
+            return
+        slug = _client_slug(self.player.engine.tree)
+        default = f"longleaf_outcome_log_{slug}_{datetime.now():%Y%m%d}.jsonl"
+        path, _ = QFileDialog.getSaveFileName(self, "Export Outcome Log", default, "Outcome log (*.jsonl)")
+        if not path:
+            return
+        try:
+            shutil.copyfile(self.outcome_log.path, path)
+        except OSError as e:
+            QMessageBox.critical(self, "Couldn't save the log", str(e))
+            return
+        QMessageBox.information(
+            self, "Export Outcome Log",
+            f"Saved the outcome log ({self.outcome_log.count()} events) to:\n{path}\n\n"
+            f"It records what happened in each session (steps taken, how it ended, ticket ids, what was "
+            f"searched for) but not notes or comments.")
+
     def _clear_sessions(self):
         n = self.store.count() if self.store else 0
-        if not n:
-            QMessageBox.information(self, "Clear Saved Sessions", "There are no saved sessions.")
+        events = self.outcome_log.count() if self.outcome_log else 0
+        if not n and not events:
+            QMessageBox.information(self, "Clear Saved Sessions", "There are no saved sessions or logged events.")
             return
         reply = QMessageBox.question(
             self, "Clear Saved Sessions",
-            f"Delete {n} saved session{'s' if n != 1 else ''} from this computer? "
-            f"Export them first if they haven't been sent yet.",
+            f"Delete {n} saved session{'s' if n != 1 else ''} and {events} logged event{'s' if events != 1 else ''} "
+            f"from this computer? Export them first if they haven't been sent yet.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            self.store.clear()
+            if self.store:
+                self.store.clear()
+            if self.outcome_log:
+                self.outcome_log.clear()
 
     def closeEvent(self, event):
         self.player.flush()
+        self.player.shutdown()                    # a session left part-way is logged as abandoned
         super().closeEvent(event)
 
 

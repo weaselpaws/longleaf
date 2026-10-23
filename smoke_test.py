@@ -257,6 +257,17 @@ with tempfile.TemporaryDirectory() as d:
         win.player._choose(win.player.engine.current_step.options[0])
     win.player.yes_btn.click()
     win.player.flush()
+    import outcome_log as _ol
+    assert win.outcome_log is not None and str(win.outcome_log.path).startswith(os.path.join(d, "appdata", "logs"))
+    _kinds = [e["event"] for e in win.outcome_log.read()]
+    assert _kinds[0] == _ol.STARTED and _ol.FINISHED in _kinds and _kinds[-1] == _ol.UPDATED       # started ... finished, then the rating
+    (_sum,) = _ol.fold_sessions(win.outcome_log.read()).values()
+    assert _sum.status == _ol.STATUS_RESOLVED
+    _logout = os.path.join(d, "log-export.jsonl")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (_logout, ""))
+    QMessageBox.information = staticmethod(lambda *a, **k: None)
+    win._export_log()
+    assert len(_ol.read_events(_logout)) == len(_kinds)
     out = os.path.join(d, "fb.json")
     QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
     QMessageBox.information = staticmethod(lambda *a, **k: None)
@@ -265,8 +276,14 @@ with tempfile.TemporaryDirectory() as d:
     assert rec.feedback == {"helpful": True, "comment": ""}
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
     win._clear_sessions()
-    assert win.store.count() == 0
-    win.close()
+    assert win.store.count() == 0 and win.outcome_log.count() == 0                       # clearing removes the log too
+    win.player.restart()
+    win.player._choose(win.player.engine.current_step.options[0])
+    if win.player.engine.is_finished:                                                    # a one-answer flow: nothing to abandon
+        win.player.restart()
+        win.player._choose(win.player.engine.current_step.options[0])
+    win.close()                                                                          # closing part-way logs an abandoned session
+    assert win.outcome_log.read()[-1]["event"] in (_ol.ABANDONED, _ol.FINISHED)
     del os.environ[player_main.DATA_DIR_ENV]
 
     # Editor: import files, overlay on the graph, step panel, summary, clear
@@ -724,6 +741,65 @@ with _tf2.TemporaryDirectory() as d:
     ed.undo()
     assert ed.tree.steps["printer"].tags == ["printer"]
 print("search: Player search box (results, Enter, click, Back, record, restart) and Editor tags field OK")
+
+
+# --- Outcome log: every event leaves the Player through one sink ---
+import json as _json
+import re as _re
+import outcome_log as _ol2
+
+_doc = open("docs/API.md", encoding="utf-8").read()
+_documented = {e["event"]: set(e) for e in _json.loads(_re.search(r"<!-- outcome-log-example -->\s*```json\n(.*?)```", _doc, _re.S).group(1))}
+rl = Tree.load("examples/shared_resolutions_and_kb.json")
+events = []
+lw = PlayerWidget(rl, event_sink=lambda e: events.append(e) or True)
+lw.show()
+assert events == []                                                                       # opening the Player logs nothing
+lw.end_session()
+assert events == []                                                                       # ...and neither does leaving untouched
+lw._choose(rl.steps["start"].options[1])                                                  # offline
+lw._choose(rl.steps["offline"].options[0])                                                # shared "restart_spooler" ending
+kinds = [e["event"] for e in events]
+assert kinds == [_ol2.STARTED, _ol2.ANSWERED, _ol2.ANSWERED, _ol2.FINISHED], kinds
+fin = events[-1]
+assert (fin["outcome"], fin["resolution_id"], fin["helpful"], fin["answers"]) == ("resolved", "restart_spooler", None, 2)
+assert all(e["session_id"] == lw.engine.session_id and e["flow_title"] == rl.title for e in events)
+lw._save_now()
+assert len(events) == 4                                                                   # nothing changed, so nothing is logged again
+lw.ticket_input.setText("INC-77")
+lw.yes_btn.click()
+lw.flush()
+assert [e["event"] for e in events[4:]] == [_ol2.UPDATED] and events[-1]["helpful"] is True and events[-1]["ticket_ref"] == "INC-77"
+lw.reject_btn.click()                                                                     # "this didn't work": rejected, then reopened
+assert [e["event"] for e in events[5:]] == [_ol2.REJECTED, _ol2.REOPENED]
+assert events[5]["resolution_id"] == "restart_spooler" and events[5]["step_id"] == "offline"
+lw.restart()                                                                              # leaving part-way is an abandoned session
+assert events[-1]["event"] == _ol2.ABANDONED and events[-1]["last_step_id"] == "offline" and events[-1]["answers"] == 1
+n = len(events)
+lw.search_input.setText("zxqv wlmn")
+lw.search_input.returnPressed.emit()                                                      # nothing matches: worth logging, once
+lw.search_input.returnPressed.emit()
+assert [e["event"] for e in events[n:]] == [_ol2.NO_RESULTS] and events[-1]["query"] == "zxqv wlmn"
+lw.search_input.setText("printer offline")
+lw.search_input.returnPressed.emit()                                                      # a search that lands starts the session there
+assert events[-1]["event"] == _ol2.STARTED and events[-1]["entry_step_id"] == "offline" and events[-1]["search_query"] == "printer offline"
+lw._choose(rl.steps["offline"].options[1])                                                # an inline ending, left unrated
+lw.end_session()
+assert events[-1]["event"] == _ol2.FINISHED
+got = _ol2.fold_sessions(events)
+statuses = {x.session_id: x.status for x in got.values()}
+assert list(statuses.values()) == [_ol2.STATUS_ABANDONED, _ol2.STATUS_FINISHED], statuses
+# every kind that was emitted carries exactly the keys docs/API.md shows for it
+for e in events:
+    assert set(e) == _documented[e["event"]], (e["event"], set(e) ^ _documented[e["event"]])
+# a broken sink must never break the tech's work, and the Editor's Test pane (no sink) logs nothing
+bad = PlayerWidget(rl, event_sink=lambda e: False)
+bad._choose(rl.steps["start"].options[1])
+assert bad.engine.current_id == "offline"
+quiet = PlayerWidget(rl)
+quiet._choose(rl.steps["start"].options[1])
+quiet.restart()
+print("outcome log: started/answered/finished/updated/rejected/reopened/abandoned/no-results via one sink, keys match docs, window export + clear OK")
 
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails

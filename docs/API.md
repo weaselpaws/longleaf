@@ -177,6 +177,65 @@ question: the step they landed on and what they typed (`null` / `""` otherwise).
 begins at that step. The query is free text a tech typed, so treat it like `notes`: it can contain
 customer details.
 
+## Outcome log
+
+What the Player writes today, with no server: an append-only file of one-line JSON events
+(`outcome-log.jsonl`, one per client, in the app-data folder). It is the stream a hosted server
+would ingest (`POST /sessions/events`, a batch of these lines), and every event already leaves the
+Player through one function (`OutcomeLog.emit`, or any `callable(event) -> bool` handed to the
+`PlayerWidget`), so replacing the file with an HTTPS call is one change. File → Export Outcome Log
+copies it for the client to send back. It is separate from the session files (those carry notes and
+comments and feed the Editor overlay) and is the only record that also sees **abandoned** sessions.
+
+<!-- outcome-log-example -->
+```json
+[
+  {"v": 1, "event": "session.started", "session_id": "8f1c0d2e", "at": "2026-10-06T14:02:10-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "entry_step_id": "step_2", "search_query": "wifi keeps dropping"},
+  {"v": 1, "event": "step.answered", "session_id": "8f1c0d2e", "at": "2026-10-06T14:02:20-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "step_id": "step_2", "option_index": 0},
+  {"v": 1, "event": "ending.rejected", "session_id": "8f1c0d2e", "at": "2026-10-06T14:03:10-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "resolution_id": "wifi_forget_network", "step_id": "step_3", "option_index": 0},
+  {"v": 1, "event": "session.finished", "session_id": "8f1c0d2e", "at": "2026-10-06T14:03:30-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "outcome": "resolved", "resolution_id": "wifi_wrong_network", "escalated": false, "article_id": null,
+   "helpful": null, "ticket_ref": "", "answers": 2, "rejected": 1},
+  {"v": 1, "event": "session.updated", "session_id": "8f1c0d2e", "at": "2026-10-06T14:03:41-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "outcome": "resolved", "resolution_id": "wifi_wrong_network", "escalated": false, "article_id": null,
+   "helpful": true, "ticket_ref": "INC-4471", "answers": 2, "rejected": 1},
+  {"v": 1, "event": "session.reopened", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:00-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0"},
+  {"v": 1, "event": "session.abandoned", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:30-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "last_step_id": "step_3", "answers": 2},
+  {"v": 1, "event": "search.no_results", "session_id": "a0b1c2d3", "at": "2026-10-06T14:10:00-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "query": "blue screen"}
+]
+```
+
+| Event | When |
+|---|---|
+| `session.started` | The tech's first interaction: their first answer, or picking a search result (`entry_step_id` / `search_query` are then set). |
+| `step.answered` | An answer was chosen (`step_id` + `option_index`, never the label text). |
+| `ending.rejected` | The tech marked an ending "didn't work" (see `rejected_resolutions`). |
+| `session.finished` | The session reached an end. `outcome` is `resolved` or `error`; `helpful` is the tech's answer to "Did this solve it?" (`true` / `false` / `null`); `resolution_id` is the shared resolution, `escalated` the escalation card, `article_id` a KB article used as the resolution. |
+| `session.updated` | A finished session's rating or ticket id changed (sent again only when something changed). |
+| `session.reopened` | The tech went Back from an ending. |
+| `session.abandoned` | The tech started over, opened another flow, or closed the app part-way through. |
+| `search.no_results` | The tech pressed Enter on a search that matched nothing. |
+
+Folding the stream (`outcome_log.fold_sessions`): the **last** event decides how a session ended.
+`helpful: true` is **resolved**, `false` is **not_resolved**, `null` is **finished** (no answer), an
+`error` outcome is **error**, `session.abandoned` is **abandoned**, and a session with none of these
+is **in_progress** (still open, or the app died). Events carry ids and outcomes, not free text: no
+notes, comments, technician names or fix wording. The ticket id and the search query are the two
+things a tech types, so the file can contain customer details if they typed them.
+
 ## Search
 
 A step can carry `"tags": ["wifi", "blue screen"]` (omitted when empty): keywords the Player's

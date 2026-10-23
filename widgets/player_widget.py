@@ -21,6 +21,7 @@ from PySide6.QtGui import QPixmap
 from engine import (ARTICLE_ATTACH, ARTICLE_READ, OPTION_OK, OPTION_TRIED, TroubleshootEngine, Tree, OUTCOME_RESOLVED,
                     rich_html)
 from theme import TEXT_DIM, GREEN, RED
+import outcome_log as olog
 from search import search
 from widgets.answer_button import AnswerButton
 from widgets.article_panel import ArticlePanel
@@ -51,7 +52,7 @@ SAVE_DELAY_MS = 600   # typing in notes/comment saves once the tech pauses, not 
 
 class PlayerWidget(QWidget):
     def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None, session_store=None,
-                 autofocus_search: bool = False):
+                 autofocus_search: bool = False, event_sink=None):
         """
         on_step_changed: optional callback(step_id | None) fired whenever the
         engine moves — lets an embedding Editor highlight the live node.
@@ -61,10 +62,16 @@ class PlayerWidget(QWidget):
         are never recorded.
         autofocus_search: put the cursor in the search box whenever a session starts. The Player app
         turns this on; the Editor's Test pane leaves it off so it never steals focus from the author.
+        event_sink: optional callable(event: dict) -> bool that receives the outcome log events
+        (see outcome_log.py). Every event leaves through it, so the file can be swapped for something
+        else in one place. Unset in the Editor's Test pane, so test runs are never logged.
         """
         super().__init__(parent)
         self.on_step_changed = on_step_changed
         self.autofocus_search = autofocus_search
+        self.event_sink = event_sink
+        self._log_ctx: dict = {}
+        self._last_no_result_query = ""
         self._hits = []
         self.session_store = session_store
         self._saved_session_id: str | None = None
@@ -81,6 +88,7 @@ class PlayerWidget(QWidget):
 
     def load_tree(self, tree: Tree, base_dir: str | None = None):
         self.flush()
+        self.end_session()
         self.base_dir = base_dir
         self.engine = TroubleshootEngine(tree)
         self._reset_report_inputs()
@@ -89,10 +97,55 @@ class PlayerWidget(QWidget):
 
     def restart(self):
         self.flush()
+        self.end_session()
         self.engine.reset()
         self._reset_report_inputs()
         self._render()
         self._focus_search()
+
+    def end_session(self):
+        """Call when the session is being left (Start Over, another flow, closing the app):
+        if the tech was part-way through, the log records it as abandoned."""
+        ctx = self._session_ctx()
+        if ctx["started"] and ctx["finished"] is None and not ctx["abandoned"]:
+            ctx["abandoned"] = True
+            self._log(olog.ABANDONED, last_step_id=self.engine.current_id, answers=len(self.engine.history))
+
+    shutdown = end_session   # the app window calls this on close
+
+    # ---------- outcome log (every event goes through _log) ----------
+
+    def _session_ctx(self) -> dict:
+        if self._log_ctx.get("session_id") != self.engine.session_id:
+            self._log_ctx = {"session_id": self.engine.session_id, "started": False, "finished": None, "abandoned": False}
+        return self._log_ctx
+
+    def _log(self, kind: str, **fields):
+        if self.event_sink is None:
+            return
+        t = self.engine.tree
+        self.event_sink(olog.make_event(kind, self.engine.session_id, t.title, t.client, t.version, **fields))
+
+    def _log_started(self):
+        ctx = self._session_ctx()
+        if not ctx["started"]:
+            ctx["started"] = True
+            self._log(olog.STARTED, entry_step_id=self.engine.entry_step_id, search_query=self.engine.search_query)
+
+    def _log_finished(self):
+        """The session reached an end: log how (once), then log it again only if something about it changes."""
+        e = self.engine
+        ctx = self._session_ctx()
+        self._log_started()
+        helpful = (e.feedback or {}).get("helpful")
+        article = next((a.article_id for a in e.article_events if a.action == "resolution"), None)
+        state = (e.outcome, e.resolution_id, e.escalated, article, helpful, e.ticket_ref)
+        if state == ctx["finished"]:
+            return
+        kind = olog.FINISHED if ctx["finished"] is None else olog.UPDATED
+        ctx["finished"] = state
+        self._log(kind, outcome=e.outcome, resolution_id=e.resolution_id, escalated=e.escalated, article_id=article,
+                  helpful=helpful, ticket_ref=e.ticket_ref, answers=len(e.history), rejected=len(e.rejected))
 
     def _focus_search(self):
         if self.autofocus_search and not self.search_input.isHidden():
@@ -356,6 +409,10 @@ class PlayerWidget(QWidget):
             self.resolution_label.setVisible(False)
             self.image_label.setVisible(False)
             self._discard_saved()   # went back from an ending: that session isn't finished any more
+            ctx = self._session_ctx()
+            if ctx["finished"] is not None:
+                ctx["finished"] = None
+                self._log(olog.REOPENED)
             self.feedback_widget.setVisible(False)
             self.reject_btn.setVisible(False)
             self._show_tried()
@@ -438,6 +495,11 @@ class PlayerWidget(QWidget):
     def _pick_top_result(self):
         if getattr(self, "_hits", None):
             self._pick_result(self._hits[0])
+        else:
+            query = self.search_input.text().strip()
+            if query and query != self._last_no_result_query:      # a search that found nothing is worth knowing about
+                self._last_no_result_query = query
+                self._log(olog.NO_RESULTS, query=query)
 
     def _pick_result(self, hit):
         query = self.search_input.text()
@@ -445,6 +507,7 @@ class PlayerWidget(QWidget):
         self.search_input.clear()
         self.search_input.blockSignals(False)
         self.engine.start_at(hit.step_id, query)
+        self._log_started()
         self._render()
 
     def _show_tried(self):
@@ -458,7 +521,8 @@ class PlayerWidget(QWidget):
 
     def _reject_ending(self):
         if self.engine.can_reject():
-            self.engine.reject_current_ending()
+            rej = self.engine.reject_current_ending()
+            self._log(olog.REJECTED, resolution_id=rej.resolution_id, step_id=rej.step_id, option_index=rej.option_index)
             self._render()
 
     def _escalate(self):
@@ -504,6 +568,9 @@ class PlayerWidget(QWidget):
 
     def _choose(self, option):
         self.engine.choose(option)
+        self._log_started()
+        last = self.engine.history[-1]
+        self._log(olog.ANSWERED, step_id=last.step_id, option_index=last.option_index)
         self._render()
 
     def _go_back(self):
@@ -533,6 +600,8 @@ class PlayerWidget(QWidget):
 
     def _save_now(self):
         self._save_timer.stop()
+        if self.engine.is_finished:
+            self._log_finished()
         if self.session_store is not None and self.engine.is_finished:
             if self.session_store.save(self.engine.record()):
                 self._saved_session_id = self.engine.session_id
