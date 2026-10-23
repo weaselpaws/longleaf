@@ -21,9 +21,9 @@ The MVP is stages 1 and 2: a Player that finds the right card fast and logs the 
 | MVP item | Status | Where it stands |
 |---|---|---|
 | **Search** over card tags and keywords, landing in the right node instead of the root | ✅ | `tags` on steps (Editor field) and a search box on the Player start screen that jumps to the best-matching step; the query and landing step are logged. Plain word matching; no typo tolerance yet, and no analytics on what techs search for. |
-| **Notepad** for extra ticket notes, exported under "additional notes" | 🟡 | The result screen already takes ticket, technician and notes and exports them in all four formats. Missing: a notepad available *during* the flow, and the "additional notes" heading. |
+| **Notepad** for extra ticket notes, exported under "additional notes" | ✅ | A notepad panel beside the flow, kept per call and per persona, exported as "Additional notes" in every report format. It is the first persona tool. |
 | **One-click outcome logging**: resolved or not, optional ticket or call ID, to a plain log file | ✅ | `outcome-log.jsonl` per client: an append-only event stream (started, answered, rejected ending, finished with the tech's Yes/No and ticket id, abandoned, searches that found nothing), all written through one function so a server can replace the file later. File → Export Outcome Log sends it back. Gaps: "Did this solve it?" is still on the result screen, not asked when a tech abandons; two Players writing one file on a network share is untested; no log viewer yet (the analytics viewer below). |
-| **Roles / profiles**: a user can have several roles, each deciding which tools appear beside the flow | 🔜 | Not started. Keep roles as simple config files. |
+| **Roles / profiles**: a user can have several roles, each deciding which tools appear beside the flow | 🟡 | Built as hot-swappable **personas**: one per business an agent speaks for (the call-center case), each a folder with its own flow, branding, tools and its own session and log files. Swapping parks the call in progress and resumes it. Still to do: more tools than the notepad, remembering an agent's default persona, and having the build script bundle a personas folder. |
 | **Analytics viewer** reading the logs: flow usage ranking, resolution rate, per-card hits, trends | 🟡 | The Editor already overlays traffic per branch, helpful-rate per ending and comments on the graph, and endings are grouped by shared resolution. Missing: usage ranking across flows, trend over time, and the open decision below (a separate exe, or an internal Editor mode). |
 
 **Open decision:** is analytics a third, client-facing exe, or an internal Editor mode used for a recurring flow-review service? This roadmap currently assumes the internal overlay; a client-facing viewer changes the "clients only get the Player" model.
@@ -45,7 +45,7 @@ All 🔜, none started. They build on each other, so the order matters:
 1. **Optional customer info panel**: name, phone, account details, entered by hand or filled by a plugin. Personal data, so see "Things to watch".
 2. **Adaptive flows**: tag what the agent already knows (device model, steps tried) and skip questions already answered. The signature end-user feature; it needs the info panel and tags first.
 3. **Generic connector layer**: ID in, bundle of fields out. HubSpot is the first plugin, SolarWinds likely second. To confirm: an API token with contact read access.
-4. **Role-based toolkits**: small generic tools per role (help desk notepad, sales calculator and tax rates), added as clients ask. Rides on roles/profiles.
+4. **Role-based toolkits**: small generic tools per persona (help desk notepad ✅, sales calculator and tax rates), added as clients ask. The persona's `tools` list in `persona.json` is where they plug in.
 
 ## Things to watch
 

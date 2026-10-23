@@ -230,8 +230,8 @@ with tempfile.TemporaryDirectory() as d:
     assert saved.session_id == sid and saved.ticket_ref == "INC-7"
     assert saved.feedback == {"helpful": True, "comment": "Fixed it first try"}
 
-    fp._go_back()                                                          # un-finishing removes the saved record
-    assert store.count() == 0 and fp.feedback_widget.isHidden()
+    fp._go_back()                                                          # un-finishing keeps the record, now in progress
+    assert store.count() == 1 and store.load_all()[0].outcome == "in_progress" and fp.feedback_widget.isHidden()
     while not fp.engine.is_finished:
         fp._choose(fp.engine.current_step.options[0])
     assert store.count() == 1
@@ -553,8 +553,9 @@ with _tf2.TemporaryDirectory() as d:
     assert not pw.resolution_label.isHidden() and "KB article" in pw.resolution_label.text()
     assert pw.back_btn.isEnabled() and store.count() == 1
     assert "KB attached: Printer troubleshooting basics" in pw.report_box.toPlainText()
-    pw.back_btn.click()                                                                   # Back returns to the step, un-saves
-    assert not pw.engine.is_finished and pw.engine.current_id == "start" and store.count() == 0
+    pw.back_btn.click()                                                                   # Back returns to the step; the record stays, in progress
+    assert not pw.engine.is_finished and pw.engine.current_id == "start"
+    assert store.count() == 1 and store.load_all()[0].outcome == "in_progress"
     assert not pw.articles_panel.isHidden() and not pw.articles_panel._rows["kb_printer_basics"].attached_label.isHidden()
 
     # A shared ending offers its own articles (read / attach only), and attaching there updates the saved session.
@@ -568,7 +569,8 @@ with _tf2.TemporaryDirectory() as d:
     r2.attach_btn.click()
     assert "KB attached: Restarting the Print Spooler" in pw.report_box.toPlainText()
     pw.flush()
-    (saved,) = store.load_all()
+    assert store.count() == 2                                                             # the earlier session is kept too, in progress
+    saved = next(r for r in store.load_all() if r.resolution_id == "restart_spooler")
     assert saved.resolution_id == "restart_spooler" and [(a.article_id, a.action) for a in saved.articles] == [("kb_spooler", _ATT)]
     pw.restart()
     assert pw.engine.article_events == []
@@ -600,7 +602,8 @@ with _tf2.TemporaryDirectory() as d:
     pw._choose(rt.steps["offline"].options[0])                                            # shared "restart_spooler"
     assert pw.engine.resolution_id == "restart_spooler" and not pw.reject_btn.isHidden() and store.count() == 1
     pw.reject_btn.click()                                                                 # it didn't work
-    assert not pw.engine.is_finished and pw.engine.current_id == "offline" and store.count() == 0
+    assert not pw.engine.is_finished and pw.engine.current_id == "offline"
+    assert store.count() == 1 and store.load_all()[0].outcome == "in_progress"
     assert not pw.tried_label.isHidden() and "Restart the Print Spooler" in pw.tried_label.text()
     btns = [pw.answers_layout.itemAt(i).widget() for i in range(pw.answers_layout.count())]
     assert [b.isEnabled() for b in btns] == [False, True] and "already tried" in btns[0].text()
@@ -773,8 +776,10 @@ assert [e["event"] for e in events[4:]] == [_ol2.UPDATED] and events[-1]["helpfu
 lw.reject_btn.click()                                                                     # "this didn't work": rejected, then reopened
 assert [e["event"] for e in events[5:]] == [_ol2.REJECTED, _ol2.REOPENED]
 assert events[5]["resolution_id"] == "restart_spooler" and events[5]["step_id"] == "offline"
-lw.restart()                                                                              # leaving part-way is an abandoned session
-assert events[-1]["event"] == _ol2.ABANDONED and events[-1]["last_step_id"] == "offline" and events[-1]["answers"] == 1
+first_sid = lw.engine.session_id
+lw.restart()                                                                              # Start Over part-way is a reset, never a silent drop
+assert events[-1]["event"] == _ol2.RESET and events[-1]["last_step_id"] == "offline" and events[-1]["answers"] == 1
+assert events[-1]["restart_count"] == 1
 n = len(events)
 lw.search_input.setText("zxqv wlmn")
 lw.search_input.returnPressed.emit()                                                      # nothing matches: worth logging, once
@@ -783,12 +788,31 @@ assert [e["event"] for e in events[n:]] == [_ol2.NO_RESULTS] and events[-1]["que
 lw.search_input.setText("printer offline")
 lw.search_input.returnPressed.emit()                                                      # a search that lands starts the session there
 assert events[-1]["event"] == _ol2.STARTED and events[-1]["entry_step_id"] == "offline" and events[-1]["search_query"] == "printer offline"
+assert (events[-1]["restarted_from"], events[-1]["restart_count"]) == (first_sid, 1)         # the chain of resets is recoverable
 lw._choose(rl.steps["offline"].options[1])                                                # an inline ending, left unrated
 lw.end_session()
 assert events[-1]["event"] == _ol2.FINISHED
 got = _ol2.fold_sessions(events)
 statuses = {x.session_id: x.status for x in got.values()}
-assert list(statuses.values()) == [_ol2.STATUS_ABANDONED, _ol2.STATUS_FINISHED], statuses
+assert list(statuses.values()) == [_ol2.STATUS_RESET, _ol2.STATUS_FINISHED], statuses
+assert got[first_sid].backs == 0 and got[lw.engine.session_id].restart_count == 1 and got[lw.engine.session_id].restarted_from == first_sid
+# Back is logged; parking keeps the call and logs it; resuming logs again; a parked call is saved, not dropped
+n = len(events)
+lw.restart()                                                                              # a finished session: Start Over is just the next call
+assert events[n:] == [] and lw._chain == {"from": None, "count": 0}
+lw._choose(rl.steps["start"].options[1])
+lw._go_back()
+assert events[-1]["event"] == _ol2.BACK and events[-1]["from_step_id"] == "offline"
+lw._choose(rl.steps["start"].options[1])
+lw.park()
+lw.park()                                                                                 # idempotent
+assert [e["event"] for e in events[-1:]] == [_ol2.PARKED] and events[-1]["last_step_id"] == "offline"
+lw.resume()
+assert events[-1]["event"] == _ol2.RESUMED and lw.engine.current_id == "offline"
+lw.resume()
+assert [e["event"] for e in events].count(_ol2.RESUMED) == 1
+assert _ol2.fold_sessions(events)[lw.engine.session_id].parks == 1
+lw.end_session()
 # every kind that was emitted carries exactly the keys docs/API.md shows for it
 for e in events:
     assert set(e) == _documented[e["event"]], (e["event"], set(e) ^ _documented[e["event"]])
@@ -800,6 +824,123 @@ quiet = PlayerWidget(rl)
 quiet._choose(rl.steps["start"].options[1])
 quiet.restart()
 print("outcome log: started/answered/finished/updated/rejected/reopened/abandoned/no-results via one sink, keys match docs, window export + clear OK")
+
+# --- Records are never dropped: reset, parked and abandoned sessions are saved in progress ---
+with _tf2.TemporaryDirectory() as d:
+    kt = Tree.load("examples/shared_resolutions_and_kb.json")
+    nstore = _Store(os.path.join(d, "s"))
+    nw = PlayerWidget(kt, session_store=nstore)
+    assert nstore.count() == 0
+    nw._choose(kt.steps["start"].options[1])                                              # a session with one answer...
+    nw.restart()                                                                          # ...started over: kept
+    nw._choose(kt.steps["start"].options[1])
+    nw.park()                                                                             # ...parked: kept as it stands
+    nw.resume()
+    nw._choose(kt.steps["offline"].options[0])                                            # ...and finished
+    recs = nstore.load_all()
+    assert [r.outcome for r in recs].count("in_progress") == 1 and [r.outcome for r in recs].count("resolved") == 1
+    nw.restart()
+    nw._choose(kt.steps["start"].options[2])
+    nw.load_tree(kt)                                                                      # leaving for another flow: kept too
+    assert nstore.count() == 3 and sorted(r.outcome for r in nstore.load_all()) == ["in_progress", "in_progress", "resolved"]
+    nw.restart()                                                                          # nothing answered: nothing to keep
+    assert nstore.count() == 3
+    # the Editor's import counts the in-progress ones as traffic, not as endings
+    from feedback import analyze as _an
+    fbk = _an(kt, nstore.load_all())
+    assert fbk.sessions == 3 and fbk.resolved == 1 and fbk.step_visits["start"] == 3
+print("records: reset / parked / abandoned / taken-back sessions are kept in progress, never dropped OK")
+
+
+# --- Personas: one Player, many businesses; hot-swap parks the call; notepad is a per-persona tool ---
+import json as _pj
+import shutil as _sh
+import player_main as _pm
+import outcome_log as _pol
+
+with _tf2.TemporaryDirectory() as d:
+    pdir = os.path.join(d, "personas")
+    _sh.copytree("examples/personas", pdir)
+    os.makedirs(os.path.join(pdir, "broken"))
+    open(os.path.join(pdir, "broken", "flow.json"), "w").write("{not json")
+    os.makedirs(os.path.join(pdir, "no-notepad"))
+    _sh.copy("examples/customer_support_triage.json", os.path.join(pdir, "no-notepad", "flow.json"))
+    open(os.path.join(pdir, "no-notepad", "persona.json"), "w").write(_pj.dumps({"name": "Initech", "tools": []}))
+    os.environ[_pm.DATA_DIR_ENV] = os.path.join(d, "appdata")
+    pw0 = _pm.PlayerWindow(personas_dir=pdir)
+    pw0.show()
+    ids = list(pw0.slots)
+    assert ids[0] == "default" and set(ids) == {"default", "acme-it", "globex-support", "broken", "no-notepad"}, ids
+    assert not pw0.switcher_bar.isHidden() and pw0.switcher.count() == 5
+    assert not pw0.slots["broken"].info.usable and not pw0.switcher.model().item(ids.index("broken")).isEnabled()
+    assert "couldn't be loaded" in pw0.statusBar().currentMessage()
+    assert pw0.slots["acme-it"].player is None                                            # built the first time you swap to it
+
+    # first persona: take a call part-way, with notes
+    first = pw0.player
+    assert first.notepad is not None and first.tools_tabs is not None and first.notes_input.isHidden()
+    first._choose(first.engine.current_step.options[0])
+    first.notepad.setPlainText("Caller is Dana, laptop on guest wifi")
+    assert first.engine.notes.startswith("Caller is Dana") and first.has_open_call()
+    pw0._refresh_indicators()
+    assert pw0.switcher.itemText(0).startswith("● ")
+
+    # swap to Acme: the first call is parked (saved + logged), the window takes on Acme's look and tools
+    pw0.switch_to("acme-it")
+    assert pw0.current.info.id == "acme-it" and pw0.player is not first and pw0.stack.currentWidget() is pw0.player
+    assert pw0.player.notepad is not None and "Acme IT Help Desk" in pw0.windowTitle()
+    log0 = _pm._log_for(pw0.slots["default"].key).read()
+    assert [e["event"] for e in log0][-1] == _pol.PARKED
+    assert [r.outcome for r in _pm._store_for(pw0.slots["default"].key).load_all()] == ["in_progress"]   # not dropped
+    assert _pm._store_for(pw0.slots["acme-it"].key).count() == 0 and "persona-acme-it" in str(pw0.store.folder)
+
+    # work an Acme call; notes are per persona
+    acme = pw0.player
+    acme._choose(acme.engine.current_step.options[0])
+    acme.notepad.setPlainText("Acme only")
+    assert first.notepad.toPlainText().startswith("Caller is Dana") and acme.engine.notes == "Acme only"
+
+    # swap by keyboard action and by the combo box; a persona without tools has no notepad dock
+    pw0.persona_actions.actions()[ids.index("no-notepad")].trigger()
+    assert pw0.current.info.id == "no-notepad" and pw0.player.tools_tabs is None and not pw0.player.notes_input.isHidden()
+    pw0.switcher.setCurrentIndex(ids.index("default"))
+    pw0._switcher_picked(ids.index("default"))
+    assert pw0.player is first and first.engine.current_step is not None
+    assert [e["event"] for e in _pm._log_for(pw0.slots["default"].key).read()][-1] == _pol.RESUMED
+    assert first.engine.notes.startswith("Caller is Dana")                                # the parked call is exactly as it was
+    pw0.switch_to("broken")                                                                # an unusable persona can't be swapped to
+    assert pw0.player is first
+
+    # finish the first call: the report carries the notepad under "Additional notes"
+    while not first.engine.is_finished:
+        first._choose(first.engine.current_step.options[0])
+    assert "Additional notes" in first.report_box.toPlainText() and "Caller is Dana" in first.report_box.toPlainText()
+    assert "Additional notes" in first.engine.record().to_markdown()
+
+    # exports act on the persona you are on
+    exported = []
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (os.path.join(d, "log-%d.jsonl" % len(exported)), ""))
+    QMessageBox.information = staticmethod(lambda parent, title, text: exported.append(text))
+    pw0.switch_to("acme-it")
+    pw0._export_log()
+    assert len(_pol.read_events(os.path.join(d, "log-0.jsonl"))) == _pm._log_for("persona-acme-it").count()
+    assert not any(e["flow_client"] == "default" for e in _pol.read_events(os.path.join(d, "log-0.jsonl")))
+    pw0.close()                                                                            # closing logs/saves every open call
+    assert [e["event"] for e in _pm._log_for("persona-acme-it").read()][-1] in (_pol.ABANDONED, _pol.FINISHED)
+
+    # a lone flow behaves as before: no switcher, but the notepad is there by default
+    os.environ[_pm.PERSONAS_DIR_ENV] = os.path.join(d, "nothing-here")
+    solo = _pm.PlayerWindow()
+    assert solo.switcher_bar.isHidden() and list(solo.slots) == ["default"] and solo.player.notepad is not None
+    # File > Open Flow adds the flow as one more persona and parks the current call
+    solo.player._choose(solo.player.engine.current_step.options[0])
+    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("examples/customer_support_triage.json", ""))
+    solo._open_flow()
+    assert len(solo.slots) == 2 and not solo.switcher_bar.isHidden() and solo.current.info.id == "opened-1"
+    assert [e["event"] for e in _pm._log_for(solo.slots["default"].key).read()][-1] == _pol.PARKED
+    solo.close()
+    del os.environ[_pm.PERSONAS_DIR_ENV], os.environ[_pm.DATA_DIR_ENV]
+print("personas: discovery, broken persona listed, hot-swap parks + resumes, per-persona notes/store/log, notepad tool, exports, solo mode OK")
 
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails

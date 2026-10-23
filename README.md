@@ -157,6 +157,43 @@ anything still there at the next launch means the Editor died, and it offers to
 recover it. Image files you picked are already copied into `images/`, so they
 survive a crash. (`autosave.py`, GUI-free.)
 
+## Personas and tools (Player)
+
+A call center takes calls for many businesses, so one Player can speak for several.
+Each business is a **persona**: a folder in `personas/` beside the exe (or wherever
+`LONGLEAF_PERSONAS_DIR` points) —
+
+```
+personas/
+  acme-hvac/       flow.json  (+ its images)   persona.json (optional)
+  globex-support/  flow.json
+```
+
+— with its own flow, branding and images, and its own session and log files, so one
+business's calls never mix with another's. Adding a business is copying a folder; no
+rebuild. A flow bundled in the exe (the usual client build) is the first persona. With
+two or more, a **Speaking for** switcher appears (and a Persona menu, Ctrl+1…9):
+swapping **parks** the call in progress exactly where it is, with its notes, saved and
+logged as parked; swapping back resumes it, and a ● marks personas with a call open.
+With no personas folder it is the single-flow Player it always was. A persona whose
+flow can't be read is listed greyed out with the reason.
+
+`persona.json` is optional: `{"name": "Acme HVAC", "tools": ["notepad"]}`. `name`
+falls back to the flow's branding name, client or title. `tools` picks the small tools
+shown beside the flow for that persona (default: the notepad; `[]` for none).
+
+**Notepad**: a panel beside the flow for notes about the call. It stays while the
+tech works, is kept per call and per persona, and goes into every report format under
+**Additional notes** (the result screen's own notes box is hidden when the notepad is
+there, so the same text isn't asked for twice).
+
+Nothing is dropped: Start Over part-way through is logged as a **reset** (with a count
+of how many on one call), swapping persona **parks** the call, and a session that is
+reset, parked, abandoned or taken back from its ending is still saved, as in progress.
+`File → Export …` and `Clear Saved Sessions…` act on the persona you are on. To ship a
+call center build, build the Player as usual and put the `personas/` folder next to the
+exe (`build_client_release.py` does not copy it yet).
+
 ## Outcome log (Player)
 
 Beside the full session files, the Player keeps one plain log per client:
@@ -165,8 +202,9 @@ line, append-only. It records that a session started, each answer (step id and
 answer index), endings the tech rejected, how the session finished (resolved or
 not from the "Did this solve it?" answer, the optional ticket or call id, an
 escalation, a KB article used as the answer), a rating or ticket change after the
-fact, going Back from an ending, **abandoned sessions** (Start Over, another flow,
-or closing the app part-way), and searches that matched nothing. **File → Export
+fact, going Back from an ending, **resets** (Start Over part-way, with a count of how many
+before the call ended), **parked and resumed** calls, **abandoned sessions** (another flow,
+or closing the app part-way), every Back press, and searches that matched nothing. **File → Export
 Outcome Log…** copies it for the client to send back; **Clear Saved Sessions…**
 removes it too. Events hold ids and outcomes, not notes, comments, names or fix
 wording; the ticket id and search query are what a tech typed, so treat the file
@@ -215,8 +253,10 @@ The Player keeps what happened, and the client sends it back as a file:
 2. **Saved locally.** Every finished session (with its ticket, technician, notes
    and rating) is saved as a small JSON file the moment it finishes and updated
    as the tech types, under the app-data folder, one folder per client
-   (`LONGLEAF_DATA_DIR` overrides the location). Going back from an ending
-   un-saves that session. The Editor's Test pane never records anything.
+   (`LONGLEAF_DATA_DIR` overrides the location). Records are never dropped:
+   going back from an ending, Start Over part-way, swapping persona, or leaving for another
+   flow keeps the session, saved as it stands (in progress), so the Editor's overlay shows where
+   techs leave a flow. The Editor's Test pane never records anything.
 3. **Export.** **File → Export Feedback…** writes every saved session into one
    `longleaf_feedback_<client>_<date>.json` for the client to send back
    (exports are cumulative; the Editor ignores repeats). **File → Clear Saved

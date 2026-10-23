@@ -897,7 +897,7 @@ class SessionRecord:
         lines.append("")
         lines.append(f"Result: {self._result_line()}")
         if self.notes.strip():
-            lines.extend(["", "Notes:", self.notes.strip()])
+            lines.extend(["", "Additional notes:", self.notes.strip()])
         lines.extend(["", BRAND_LINE])
         return "\n".join(lines)
 
@@ -911,7 +911,7 @@ class SessionRecord:
             out.append(f"{i}. **{h.step_question}** → {h.chosen_label} _({h.timestamp})_")
         out.extend(["", "## Result", "", self._result_line()])
         if self.notes.strip():
-            out.extend(["", "## Notes", "", self.notes.strip()])
+            out.extend(["", "## Additional notes", "", self.notes.strip()])
         out.extend(["", f"_{BRAND_LINE}_", ""])
         return "\n".join(out)
 
@@ -923,7 +923,7 @@ class SessionRecord:
             f"<span class=t>{e(h.timestamp)}</span></li>"
             for h in self.history
         )
-        notes = f"<h2>Notes</h2><p>{e(self.notes.strip())}</p>" if self.notes.strip() else ""
+        notes = f"<h2>Additional notes</h2><p>{e(self.notes.strip())}</p>" if self.notes.strip() else ""
         cls = {"resolved": "ok", "error": "bad"}.get(self.outcome, "")
         return (
             "<!doctype html><html><head><meta charset='utf-8'>"
