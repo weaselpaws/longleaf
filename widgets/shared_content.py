@@ -8,7 +8,7 @@ the Editor records the whole change as one undo step on OK.
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
@@ -117,6 +117,9 @@ class _ResolutionsTab(QWidget):
         form.addRow("Screenshot:", self.image_picker)
         self.articles = _ArticleField(tree, self._articles_changed)
         form.addRow("KB articles:", self.articles)
+        self.escalation_check = QCheckBox("Escalation card: show this when every fix on a path has been tried")
+        self.escalation_check.toggled.connect(self._escalation_toggled)
+        form.addRow(self.escalation_check)
         self.used_label = QLabel("")
         self.used_label.setStyleSheet(f"color: {TEXT_DIM};")
         form.addRow(self.used_label)
@@ -126,6 +129,15 @@ class _ResolutionsTab(QWidget):
     def _current_id(self) -> str | None:
         item = self.list.currentItem()
         return item.data(Qt.UserRole) if item else None
+
+    def _escalation_toggled(self, on: bool):
+        rid = self._current_id()
+        if rid in self.tree.resolutions:
+            if on:
+                self.tree.escalation_id = rid
+            elif self.tree.escalation_id == rid:
+                self.tree.escalation_id = ""
+            self._select(self.list.currentItem(), None)     # refresh the note under the form
 
     def refresh(self, select: str | None = None):
         keep = select or self._current_id()
@@ -156,7 +168,14 @@ class _ResolutionsTab(QWidget):
         self.image_picker.set_path(res.image if res else "")
         self.articles.set_ids(list(res.articles) if res else [])
         self.id_label.setText(rid or "")
+        self.escalation_check.blockSignals(True)
+        self.escalation_check.setChecked(bool(rid) and self.tree.escalation_id == rid)
+        self.escalation_check.blockSignals(False)
         n = self._uses(rid) if rid else 0
+        if res is not None and self.tree.escalation_id == rid:
+            n_text = f"Used by {n} answer{'s' if n != 1 else ''}. " if n else ""
+            self.used_label.setText(n_text + "This is the flow's escalation card.")
+            return
         self.used_label.setText("" if not res else f"Used by {n} answer{'s' if n != 1 else ''}."
                                 + ("" if n else " Nothing ends here yet."))
 

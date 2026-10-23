@@ -116,6 +116,18 @@ answer (steps only; **Back** undoes just that and returns to the step). Each is
 logged through `record_article()` / `use_article_as_resolution()`, so it lands in
 the saved session and the feedback export.
 
+**Rejected endings.** A real ending has **This didn't work — try something else**.
+Clicking it remembers that resolution for the rest of the session (it goes in the
+record as `rejected_resolutions`) and returns the tech to the step it came from.
+Answers that lead only to rejected endings stay on screen, dimmed and marked
+"already tried", so the tech can't be sent round again — including by a different
+path to the same shared resolution. When nothing is left on a step, an **escalate**
+button finishes the session with the flow's escalation card: a shared resolution
+designated in the Editor (**Shared… → Escalation card**, `escalation_resolution` in
+the flow), or a plain default. The result screen and reports list what was tried.
+In the Editor's graph and import summary, an ending rejected in at least half of
+3+ sightings is flagged (orange) as one techs keep rejecting.
+
 ### Session records and reports
 
 Every pass through a flow is a `SessionRecord` (`engine.record()`): the

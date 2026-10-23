@@ -179,14 +179,19 @@ def ending_key(tree: Tree, step_id: str, option_index: int) -> EndingKey:
     """Which ending an answer leads to. Answers that point at a shared
     resolution all count as the one ending, whatever path led there; inline
     endings are told apart by where they sit."""
-    return tree.steps[step_id].options[option_index].resolution_id or (step_id, option_index)
+    return tree.ending_key(step_id, option_index)
+
+
+HIGH_REJECTION_RATE = 0.5   # an ending techs reject at least this often is flagged...
+HIGH_REJECTION_MIN = 3      # ...once it has been reached this many times (a single "no" proves nothing)
 
 
 @dataclass
 class EndingStat:
-    count: int = 0
+    count: int = 0          # sessions that finished here
     helpful: int = 0
     unhelpful: int = 0
+    rejected: int = 0       # times a tech reached it, marked it "didn't work" and carried on
 
     @property
     def rated(self) -> int:
@@ -195,6 +200,18 @@ class EndingStat:
     @property
     def helpful_rate(self) -> Optional[float]:
         return self.helpful / self.rated if self.rated else None
+
+    @property
+    def reached(self) -> int:
+        return self.count + self.rejected
+
+    @property
+    def rejection_rate(self) -> Optional[float]:
+        return self.rejected / self.reached if self.reached else None
+
+    @property
+    def high_rejection(self) -> bool:
+        return self.reached >= HIGH_REJECTION_MIN and self.rejection_rate >= HIGH_REJECTION_RATE
 
 
 @dataclass
@@ -247,6 +264,16 @@ def _lines_up(tree: Tree, record: SessionRecord) -> bool:
     return True
 
 
+def _rejected_key(tree: Tree, rej) -> Optional[EndingKey]:
+    """The ending a rejection refers to in this flow, or None if the flow no longer has it."""
+    if rej.resolution_id:
+        return rej.resolution_id if rej.resolution_id in tree.resolutions else None
+    step = tree.steps.get(rej.step_id)
+    if step is None or not 0 <= rej.option_index < len(step.options) or not step.options[rej.option_index].is_terminal:
+        return None
+    return (rej.step_id, rej.option_index)
+
+
 def _seconds(record: SessionRecord) -> Optional[int]:
     try:
         return max(0, int((datetime.fromisoformat(record.finished_at)
@@ -262,6 +289,10 @@ def analyze(tree: Tree, records: Iterable[SessionRecord]) -> FlowFeedback:
             fb.unmatched += 1
             continue
         fb.sessions += 1
+        for rej in r.rejected_resolutions:
+            key = _rejected_key(tree, rej)
+            if key is not None:
+                fb.endings.setdefault(key, EndingStat()).rejected += 1
         for h in r.history:
             fb.step_visits[h.step_id] = fb.step_visits.get(h.step_id, 0) + 1
             key = (h.step_id, h.option_index)
@@ -295,6 +326,14 @@ def _pct(x: Optional[float]) -> str:
 def _clip(text: str, n: int = 50) -> str:
     text = " ".join(text.split())
     return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def _ending_name(tree: Tree, key: EndingKey) -> str:
+    if isinstance(key, str):
+        res = tree.resolutions.get(key)
+        return f"shared resolution “{_clip(res.text if res else key)}”"
+    sid, idx = key
+    return f"{sid} → “{tree.steps[sid].options[idx].label}”"
 
 
 def foreign_sessions(tree: Tree, records: Iterable[SessionRecord]) -> int:
@@ -331,13 +370,13 @@ def summarize(tree: Tree, fb: FlowFeedback, duplicates: int = 0, foreign: int = 
     if weak:
         lines += ["", "Endings techs found unhelpful:"]
         for key, e in weak:
-            if isinstance(key, str):
-                res = tree.resolutions.get(key)
-                what = f"shared resolution “{_clip(res.text if res else key)}”"
-            else:
-                sid, idx = key
-                what = f"{sid} → “{tree.steps[sid].options[idx].label}”"
-            lines.append(f"  • {what}: {_pct(e.helpful_rate)} helpful of {e.rated}")
+            lines.append(f"  • {_ending_name(tree, key)}: {_pct(e.helpful_rate)} helpful of {e.rated}")
+    flagged = sorted(((k, e) for k, e in fb.endings.items() if e.high_rejection),
+                     key=lambda ke: (-ke[1].rejection_rate, -ke[1].reached))[:5]
+    if flagged:
+        lines += ["", "Endings techs keep rejecting (marked “didn't work”, then carried on):"]
+        for key, e in flagged:
+            lines.append(f"  • {_ending_name(tree, key)}: rejected {e.rejected} of {e.reached} times ({_pct(e.rejection_rate)})")
     n_comments = sum(len(c) for c in fb.comments.values())
     if n_comments:
         lines += ["", f"{n_comments} comment{'s' if n_comments != 1 else ''}, pinned to the steps they came from "
@@ -361,6 +400,8 @@ def step_feedback_text(tree: Tree, fb: FlowFeedback, step_id: str) -> str:
             line += f"  —  ends here, {_pct(stat.helpful_rate)} helpful of {stat.rated}"
         elif stat:
             line += "  —  ends here"
+        if stat and stat.rejected:
+            line += f"{'; ' if stat.rated else '  —  '}rejected {stat.rejected} of {stat.reached} times"
         lines.append(line)
     mark = {True: "▲", False: "▼", None: "•"}
     comments = fb.comments.get(step_id, [])

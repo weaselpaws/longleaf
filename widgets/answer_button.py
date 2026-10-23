@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve, QRect
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
 import theme
-from theme import FIELD, BORDER, TEXT, BG
+from theme import FIELD, BORDER, TEXT, TEXT_DIM, BG
 
 
 def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
@@ -69,8 +69,9 @@ class AnswerButton(QPushButton):
         painter.setRenderHint(QPainter.Antialiasing)
 
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        bg = _lerp_color(self._base_bg, self._hover_bg, self._glow)
-        border = _lerp_color(self._base_border, self._hover_border, self._glow)
+        glow = self._glow if self.isEnabled() else 0.0
+        bg = _lerp_color(self._base_bg, self._hover_bg, glow)
+        border = _lerp_color(self._base_border, self._hover_border, glow)
 
         painter.setBrush(bg)
         painter.setPen(QPen(border, 1.5))
@@ -80,6 +81,8 @@ class AnswerButton(QPushButton):
             text_color = _lerp_color(QColor(TEXT), QColor(BG), self._glow)
         else:
             text_color = _lerp_color(QColor(TEXT), QColor(theme.GOLD_BRIGHT), self._glow)
+        if not self.isEnabled():
+            text_color = QColor(TEXT_DIM)
         painter.setPen(text_color)
         font = self.font()
         font.setPointSize(11)

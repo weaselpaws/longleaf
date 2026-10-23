@@ -21,6 +21,7 @@ TEXT = "#EDE8DF"
 TEXT_DIM = "#9A9080"
 GREEN = "#5FB865"
 RED = "#D2685A"
+ORANGE = "#E08A3C"   # an ending techs keep rejecting (distinct from red = unhelpful)
 
 DEFAULT_GOLD = GOLD
 

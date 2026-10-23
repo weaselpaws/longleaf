@@ -9,7 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import (  # noqa: E402
-    ARTICLE_ATTACH, ARTICLE_READ, ARTICLE_RESOLUTION, Article, Resolution,
+    ARTICLE_ATTACH, ARTICLE_READ, ARTICLE_RESOLUTION, Article, Resolution, DEFAULT_ESCALATION,
+    OPTION_EXHAUSTED, OPTION_OK, OPTION_TRIED,
     FlowFormatError, HistoryEntry, Option, SessionRecord, Step, Tree, TroubleshootEngine,
     OUTCOME_ERROR, OUTCOME_IN_PROGRESS, OUTCOME_RESOLVED, SEVERITY_ERROR, SEVERITY_WARNING,
 )
@@ -607,3 +608,123 @@ def test_attach_to_ticket_text_prefers_the_link_over_the_body():
         "Wi-Fi profiles\nhttps://kb.example.com/wifi"
     assert Article("a", "Wi-Fi profiles", "Forget the network, rejoin.").ticket_text() == "Wi-Fi profiles\nForget the network, rejoin."
     assert Article("a", "Just a title").ticket_text() == "Just a title"
+
+
+# ---------- rejected endings and escalation ----------
+
+def reject_tree(escalation: str = "esc") -> Tree:
+    """a -> b -> fix1; a -> c -> fix1 / fix2; a -> inline ending. 'esc' is the designated escalation card."""
+    return tree_of(
+        Step("a", "Q a", [Option("via b", "b"), Option("via c", "c"), Option("inline", None, "Inline fix.")]),
+        Step("b", "Q b", [Option("done", None, resolution_id="fix1")]),
+        Step("c", "Q c", [Option("done", None, resolution_id="fix1"), Option("other", None, resolution_id="fix2")]),
+        resolutions={"fix1": Resolution("fix1", "Reseat the cable."), "fix2": Resolution("fix2", "Swap the port."),
+                     "esc": Resolution("esc", "Call the vendor.")},
+        escalation_id=escalation,
+    )
+
+
+def run_to(e, *picks):
+    for i in picks:
+        e.choose(e.current_step.options[i])
+
+
+def test_rejecting_an_ending_returns_to_its_step_and_blocks_that_answer():
+    e = TroubleshootEngine(reject_tree())
+    run_to(e, 0, 0)                                              # a -> b -> fix1
+    assert e.can_reject() and e.resolution_id == "fix1"
+    rej = e.reject_current_ending()
+    assert (rej.resolution_id, rej.step_id, rej.option_index, rej.text) == ("fix1", "b", 0, "Reseat the cable.")
+    assert e.current_id == "b" and not e.is_finished and e.outcome == OUTCOME_IN_PROGRESS and e.resolution_id is None
+    assert e.option_states() == [OPTION_TRIED] and e.nothing_left()
+    with pytest.raises(ValueError):
+        e.choose(e.current_step.options[0])
+    assert [r.step_id for r in e.record().rejected_resolutions] == ["b"] and e.record().outcome == OUTCOME_IN_PROGRESS
+
+
+def test_the_same_shared_ending_is_blocked_from_every_path_and_exhausted_branches_are_skipped():
+    e = TroubleshootEngine(reject_tree())
+    run_to(e, 0, 0)
+    e.reject_current_ending()
+    e.go_back()                                                  # back to a
+    assert e.option_states() == [OPTION_EXHAUSTED, OPTION_OK, OPTION_OK]      # b only led to fix1; c has fix2; inline untouched
+    run_to(e, 1)                                                 # via c
+    assert e.option_states() == [OPTION_TRIED, OPTION_OK]        # fix1 is rejected here too, fix2 is still on offer
+    assert not e.nothing_left()
+    run_to(e, 1)
+    assert e.resolution_id == "fix2" and e.outcome == OUTCOME_RESOLVED
+    assert [r.resolution_id for r in e.record().rejected_resolutions] == ["fix1"]    # kept on the finished record
+
+
+def test_inline_endings_are_rejected_by_step_and_answer():
+    e = TroubleshootEngine(reject_tree())
+    run_to(e, 2)
+    rej = e.reject_current_ending()
+    assert (rej.resolution_id, rej.step_id, rej.option_index, rej.key) == (None, "a", 2, ("a", 2))
+    assert e.option_states() == [OPTION_OK, OPTION_OK, OPTION_TRIED]
+
+
+def test_escalate_finishes_with_the_designated_card_and_back_returns():
+    e = TroubleshootEngine(reject_tree())
+    run_to(e, 0, 0)
+    e.reject_current_ending()
+    e.escalate()
+    assert e.is_finished and e.outcome == OUTCOME_RESOLVED and e.escalated
+    assert (e.resolution, e.resolution_id) == ("Call the vendor.", "esc") and not e.can_reject()
+    rec = e.record()
+    assert rec.resolution_id == "esc" and [r.resolution_id for r in rec.rejected_resolutions] == ["fix1"]
+    assert "Tried, didn't work: Reseat the cable." in rec.to_text()
+    assert e.can_go_back()
+    e.go_back()
+    assert e.current_id == "b" and not e.is_finished and not e.escalated and e.rejected      # rejections survive Back
+
+
+def test_escalate_without_a_designated_card_uses_the_default_text():
+    e = TroubleshootEngine(reject_tree(escalation=""))
+    run_to(e, 0, 0)
+    e.reject_current_ending()
+    e.escalate()
+    assert (e.resolution, e.resolution_id) == (DEFAULT_ESCALATION, None)
+
+
+def test_reject_is_only_for_real_endings():
+    e = TroubleshootEngine(reject_tree())
+    assert not e.can_reject()
+    with pytest.raises(ValueError):
+        e.reject_current_ending()
+    t = kb_tree()
+    k = TroubleshootEngine(t)
+    k.use_article_as_resolution("kb_net")
+    assert not k.can_reject()                                    # an article is not an ending to reject
+    bad = TroubleshootEngine(tree_of(Step("a", "Q", [Option("x", "ghost")])))
+    bad.choose(bad.current_step.options[0])
+    assert bad.outcome == OUTCOME_ERROR and not bad.can_reject()
+
+
+def test_rejections_reset_with_a_new_session_and_round_trip_in_the_record():
+    e = TroubleshootEngine(reject_tree())
+    run_to(e, 0, 0)
+    e.reject_current_ending()
+    e.escalate()
+    rec = e.record()
+    again = SessionRecord.from_dict(json.loads(rec.to_json()))
+    assert again.to_dict() == rec.to_dict() and again.rejected_resolutions[0].key == "fix1"
+    e.reset()
+    assert e.rejected == [] and not e.escalated and e.option_states() == [OPTION_OK] * 3
+    old = rec.to_dict()
+    del old["rejected_resolutions"]
+    assert SessionRecord.from_dict(old).rejected_resolutions == []
+
+
+def test_escalation_card_is_additive_validated_and_cleared_on_delete():
+    plain = tree_of(Step("a", "Q", [end()]))
+    assert "escalation_resolution" not in plain.to_dict()
+    t = reject_tree()
+    again = Tree.from_dict(json.loads(json.dumps(t.to_dict())))
+    assert again.escalation_id == "esc" and again.to_dict() == t.to_dict()
+    assert "UNUSED_RESOLUTION" not in codes(t) and t.check() == []              # designated, so not "unused"
+    t.escalation_id = "ghost"
+    assert "MISSING_ESCALATION" in codes(t)
+    t.escalation_id = "esc"
+    t.delete_resolution("esc")
+    assert t.escalation_id == ""

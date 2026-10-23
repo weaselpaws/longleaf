@@ -95,8 +95,8 @@ A session is one pass through a flow — the "session record" below.
      "answers": [{"option_index": 0, "label": "No network access at all", "count": 71}]}
   ],
   "endings": [
-    {"resolution_id": "wifi_wrong_network", "count": 62, "helpful": 50, "not_helpful": 5, "no_rating": 7},
-    {"step_id": "step_3", "option_index": 1, "count": 40, "helpful": 31, "not_helpful": 4, "no_rating": 5}
+    {"resolution_id": "wifi_wrong_network", "count": 62, "helpful": 50, "not_helpful": 5, "no_rating": 7, "rejected": 9},
+    {"step_id": "step_3", "option_index": 1, "count": 40, "helpful": 31, "not_helpful": 4, "no_rating": 5, "rejected": 0}
   ]
 }
 ```
@@ -107,6 +107,9 @@ with the combined traffic and helpful-rate), and by `step_id` + `option_index` f
 (no `resolution_id`). That is why the session record stores them (labels and question text are kept only so reports stay readable). The
 Editor overlays this on the flow: traffic per branch, helpful-rate per ending, and the
 free-text comments (via `GET /sessions?has_feedback=true`) pinned to the step they came from.
+`count` is sessions that *finished* at the ending; `rejected` is how many times a tech reached it,
+marked it "didn't work" and carried on (from each record's `rejected_resolutions`). An ending's
+rejection rate is `rejected / (rejected + count)`; the Editor flags high rates.
 **Step ids are therefore identity** — don't reuse an id for a different question between
 versions, or the history gets merged.
 
@@ -134,6 +137,10 @@ Player asks "Did this solve it?" and stores it via `set_feedback()`; today the r
   "articles": [
     {"article_id": "kb_wifi_profiles", "action": "attach", "at": "2026-10-06T14:03:35-05:00", "title": "Fixing saved Wi-Fi profiles"}
   ],
+  "rejected_resolutions": [
+    {"resolution_id": "wifi_forget_network", "step_id": "step_3", "option_index": 0,
+     "text": "Forget the network, then rejoin it.", "at": "2026-10-06T14:03:10-05:00"}
+  ],
   "history": [
     {"step_id": "step_1", "step_question": "What's the symptom on the device?", "option_index": 0,
      "chosen_label": "No network access at all", "answered_at": "2026-10-06T14:02:20-05:00"},
@@ -157,6 +164,12 @@ two different paths that finish at the same resolution count as one ending.
 `resolution` then reads `KB article: <title>`). `title` is kept so reports stay readable.
 Attaching the same article twice is logged once.
 
+`rejected_resolutions` lists the endings the tech marked "didn't work" before the session finished,
+in order. `resolution_id` is the shared resolution, or `null` for an inline ending (which is then
+told apart by `step_id` + `option_index`, the answer that led to it); `text` is kept so reports stay
+readable. A rejected ending is not the session's `resolution`: the tech is sent back to the step it
+came from and carries on. Old records without the field load with an empty list.
+
 ## Shared resolutions and KB articles
 
 Two optional, top-level dicts in a flow, both keyed by id (ids are identity, like step ids; don't
@@ -175,6 +188,9 @@ reuse one for something different between versions). A flow that has neither is 
   number of answers, from any number of steps, can point at the same one. Its text and screenshot
   live in one place. Inline `resolution` text still works for one-off endings.
 - Steps and resolutions list `"articles": ["…"]` ids to offer the tech while they are there.
+- An optional top-level `"escalation_resolution": "<resolution id>"` names the shared resolution to
+  show when the tech has rejected every fix on their path ("Escalate this ticket", who to call, and
+  so on). Without one the Player shows a plain default. Omitted from the file when not set.
 
 ## Issue
 
@@ -211,6 +227,7 @@ One entry of `POST /flows/validate`'s `issues` (and of the `422` body), from `Is
 | `MISSING_ARTICLE` | error | A step or resolution offers a KB article that doesn't exist. |
 | `EMPTY_ARTICLE` | error | A KB article has no title. |
 | `UNUSED_ARTICLE` | warning | A KB article isn't offered by any step or resolution. |
+| `MISSING_ESCALATION` | error | The flow's `escalation_resolution` names a shared resolution that doesn't exist. |
 
 ## What would have to be built
 

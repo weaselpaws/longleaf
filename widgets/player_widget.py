@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
 from PySide6.QtGui import QPixmap
 
-from engine import ARTICLE_ATTACH, ARTICLE_READ, TroubleshootEngine, Tree, OUTCOME_RESOLVED, rich_html
+from engine import (ARTICLE_ATTACH, ARTICLE_READ, OPTION_OK, OPTION_TRIED, TroubleshootEngine, Tree, OUTCOME_RESOLVED,
+                    rich_html)
 from theme import TEXT_DIM, GREEN, RED
 from widgets.answer_button import AnswerButton
 from widgets.article_panel import ArticlePanel
@@ -139,6 +140,13 @@ class PlayerWidget(QWidget):
         self._make_rich(self.note_label)
         card_layout.addWidget(self.note_label)
 
+        self.tried_label = QLabel("")
+        self.tried_label.setProperty("role", "note")
+        self.tried_label.setWordWrap(True)
+        self.tried_label.setVisible(False)
+        self._make_rich(self.tried_label)
+        card_layout.addWidget(self.tried_label)
+
         self.image_label = QLabel("")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setVisible(False)
@@ -155,6 +163,19 @@ class PlayerWidget(QWidget):
         self.resolution_label.setVisible(False)
         self._make_rich(self.resolution_label)
         card_layout.addWidget(self.resolution_label)
+
+        # "This didn't work": remember this ending as rejected and go back to try something else
+        self.reject_btn = QPushButton("This didn't work — try something else")
+        self.reject_btn.clicked.connect(self._reject_ending)
+        self.reject_btn.setVisible(False)
+        card_layout.addWidget(self.reject_btn)
+
+        # shown instead of answers once every answer only leads to endings already rejected
+        self.escalate_btn = QPushButton("Everything has been tried — escalate")
+        self.escalate_btn.setProperty("role", "primary")
+        self.escalate_btn.clicked.connect(self._escalate)
+        self.escalate_btn.setVisible(False)
+        card_layout.addWidget(self.escalate_btn)
 
         # KB articles offered at this step / ending
         self.articles_panel = ArticlePanel()
@@ -289,6 +310,9 @@ class PlayerWidget(QWidget):
             self.resolution_label.setText(("✓  " if ok else "⚠  ") + rich_html(self.engine.resolution or ""))
             self._show_image(self.engine.resolution_image if ok else "")
             self.feedback_widget.setVisible(self.session_store is not None and ok)
+            self.reject_btn.setVisible(self.engine.can_reject())
+            self.escalate_btn.setVisible(False)
+            self._show_tried()
             self.details_widget.setVisible(True)
             self.report_box.setVisible(True)
             self._refresh_report()
@@ -302,6 +326,8 @@ class PlayerWidget(QWidget):
             self.image_label.setVisible(False)
             self._discard_saved()   # went back from an ending: that session isn't finished any more
             self.feedback_widget.setVisible(False)
+            self.reject_btn.setVisible(False)
+            self._show_tried()
             self.details_widget.setVisible(False)
             self.report_box.setVisible(False)
             self.copy_btn.setVisible(False)
@@ -318,10 +344,16 @@ class PlayerWidget(QWidget):
                 else:
                     self.note_label.setVisible(False)
 
-                for option in step.options:
-                    btn = AnswerButton(option.label, terminal=option.is_terminal)
-                    btn.clicked.connect(lambda _, o=option: self._choose(o))
+                for option, state in zip(step.options, self.engine.option_states()):
+                    if state == OPTION_OK:
+                        btn = AnswerButton(option.label, terminal=option.is_terminal)
+                        btn.clicked.connect(lambda _, o=option: self._choose(o))
+                    else:   # only leads to fixes the tech already rejected: shown so they can see why, but not clickable
+                        why = "already tried" if state == OPTION_TRIED else "everything this leads to has been tried"
+                        btn = AnswerButton(f"{option.label}  —  {why}", terminal=option.is_terminal)
+                        btn.setEnabled(False)
                     self.answers_layout.addWidget(btn)
+                self.escalate_btn.setVisible(self.engine.nothing_left())
 
         self._refresh_articles()
 
@@ -330,6 +362,24 @@ class PlayerWidget(QWidget):
 
         if self.on_step_changed:
             self.on_step_changed(self.engine.current_id)
+
+    def _show_tried(self):
+        rejected = self.engine.rejected
+        if not rejected:
+            self.tried_label.setVisible(False)
+            return
+        tried = "; ".join(" ".join(r.text.split())[:70] for r in rejected)
+        self.tried_label.setText("Tried, didn't work: " + rich_html(tried))
+        self.tried_label.setVisible(True)
+
+    def _reject_ending(self):
+        if self.engine.can_reject():
+            self.engine.reject_current_ending()
+            self._render()
+
+    def _escalate(self):
+        self.engine.escalate()
+        self._render()
 
     def _refresh_articles(self):
         attached = {e.article_id for e in self.engine.article_events if e.action == ARTICLE_ATTACH}
