@@ -504,6 +504,67 @@ assert _ed3.tree.steps["queued"].articles == ["kb_spooler"] and "Restarting the 
 assert _ed3._dirty
 print("editor: shared resolutions + KB articles (assign, create from text, switch to next step, dialog edit/undo/delete, step articles) OK")
 
+
+# --- Player: KB articles (read, attach to ticket, use as resolution) ---
+import tempfile as _tf2
+from feedback import SessionStore as _Store
+from engine import ARTICLE_ATTACH as _ATT, ARTICLE_READ as _READ, ARTICLE_RESOLUTION as _RES
+
+with _tf2.TemporaryDirectory() as d:
+    kb = Tree.load("examples/shared_resolutions_and_kb.json")
+    store = _Store(os.path.join(d, "sessions"))
+    pw = PlayerWidget(kb, session_store=store)
+    pw.show()
+    panel = pw.articles_panel
+    assert not panel.isHidden() and list(panel._rows) == ["kb_printer_basics"]             # offered on the start step
+    row = panel._rows["kb_printer_basics"]
+    assert row.body_label.isHidden() and not row.use_btn.isHidden()
+    row.read_btn.setChecked(True)                                                         # Read expands it and logs it
+    assert not row.body_label.isHidden() and "Check power" in row.body_label.text()
+    assert [(e.article_id, e.action) for e in pw.engine.article_events] == [("kb_printer_basics", _READ)]
+    row.read_btn.setChecked(False)
+    row.read_btn.setChecked(True)
+    assert len(pw.engine.article_events) == 2                                              # each open is a read
+    row.attach_btn.click()                                                                # copies title + text, logs, marks it
+    assert QApplication.clipboard().text().startswith("Printer troubleshooting basics\nCheck power")
+    assert not row.attached_label.isHidden() and pw.engine.article_events[-1].action == _ATT
+    row.attach_btn.click()
+    assert [e.action for e in pw.engine.article_events].count(_ATT) == 1                  # attaching twice is one attachment
+
+    row.use_btn.click()                                                                   # use as the resolution: session ends
+    assert pw.engine.is_finished and pw.engine.resolution.startswith("KB article: Printer troubleshooting basics")
+    assert not pw.resolution_label.isHidden() and "KB article" in pw.resolution_label.text()
+    assert pw.back_btn.isEnabled() and store.count() == 1
+    assert "KB attached: Printer troubleshooting basics" in pw.report_box.toPlainText()
+    pw.back_btn.click()                                                                   # Back returns to the step, un-saves
+    assert not pw.engine.is_finished and pw.engine.current_id == "start" and store.count() == 0
+    assert not pw.articles_panel.isHidden() and not pw.articles_panel._rows["kb_printer_basics"].attached_label.isHidden()
+
+    # A shared ending offers its own articles (read / attach only), and attaching there updates the saved session.
+    pw.restart()
+    pw._choose(kb.steps["start"].options[0])                                               # -> queued
+    assert pw.articles_panel.isHidden()                                                   # that step offers none
+    pw._choose(kb.steps["queued"].options[0])                                              # -> shared "restart_spooler"
+    assert pw.engine.is_finished and pw.engine.resolution_id == "restart_spooler"
+    r2 = pw.articles_panel._rows["kb_spooler"]
+    assert r2.use_btn.isHidden()
+    r2.attach_btn.click()
+    assert "KB attached: Restarting the Print Spooler" in pw.report_box.toPlainText()
+    pw.flush()
+    (saved,) = store.load_all()
+    assert saved.resolution_id == "restart_spooler" and [(a.article_id, a.action) for a in saved.articles] == [("kb_spooler", _ATT)]
+    pw.restart()
+    assert pw.engine.article_events == []
+
+    # Flows without articles show no panel at all, and a dangling article id never breaks the screen.
+    plain = PlayerWidget(Tree.load("sample_tree.json"))
+    assert plain.articles_panel.isHidden()
+    broken = Tree.load("examples/shared_resolutions_and_kb.json")
+    broken.steps["start"].articles = ["ghost", "kb_spooler"]
+    bw = PlayerWidget(broken)
+    assert list(bw.articles_panel._rows) == ["kb_spooler"]
+print("player: KB articles read / attach / use as resolution, back, report, saved session OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

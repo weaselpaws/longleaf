@@ -106,7 +106,15 @@ changes nothing and OK is one undo step. On an answer that ends the flow, the
 (with a preview and **Edit shared…**), or **+ New shared resolution from this
 text…** to promote what you just typed. Pointing an answer at a next step clears
 its shared resolution. Each step has **KB articles offered here → Choose…**.
-Player screens for articles are not built yet.
+
+In the Player, a step or ending that offers articles shows a **Knowledge base**
+list under the answers. **Read** expands the article in place; **Attach to
+ticket** copies its title and link (or its text, when it has no link) to the
+clipboard and notes it as attached (it then appears in the report as "KB
+attached"); **Use as resolution** finishes the session with the article as the
+answer (steps only; **Back** undoes just that and returns to the step). Each is
+logged through `record_article()` / `use_article_as_resolution()`, so it lands in
+the saved session and the feedback export.
 
 ### Session records and reports
 

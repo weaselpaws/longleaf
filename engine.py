@@ -135,6 +135,10 @@ class Article:
         return Article(id=d.get("id") or default_id, title=d.get("title", ""),
                        body=d.get("body", ""), url=d.get("url", ""))
 
+    def ticket_text(self) -> str:
+        """What "Attach to ticket" copies: the title and the link, or the text when there is no link."""
+        return f"{self.title}\n{self.url or self.body}".strip()
+
     def as_resolution_text(self) -> str:
         return f"KB article: {self.title}" + (f" ({self.url})" if self.url else "")
 
@@ -897,6 +901,7 @@ class TroubleshootEngine:
         self.resolution_id = None
         self.resolution_articles = []
         self.article_events = []
+        self._before_article_resolution: Optional[dict] = None
         self.outcome = OUTCOME_IN_PROGRESS
         self.session_id = str(uuid.uuid4())
         self.started_at = _now().isoformat()
@@ -965,10 +970,18 @@ class TroubleshootEngine:
                 self.resolution_articles = list(ending.articles)
 
     def can_go_back(self) -> bool:
-        return len(self.history) > 0
+        return len(self.history) > 0 or self._before_article_resolution is not None
 
     def go_back(self):
-        """Undo the last answer and return to the step it was asked from."""
+        """Undo the last answer and return to the step it was asked from.
+        If the session was finished by using a KB article as the resolution,
+        this undoes just that and returns to where the article was used."""
+        if self._before_article_resolution is not None:
+            before, self._before_article_resolution = self._before_article_resolution, None
+            for k, v in before.items():
+                setattr(self, k, v)
+            self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
+            return
         if not self.history:
             return
         entry = self.history.pop()
@@ -1011,8 +1024,13 @@ class TroubleshootEngine:
         if art is None:
             raise ValueError(f"No KB article {article_id!r} in this flow.")
         now = _now().isoformat()
+        if self._before_article_resolution is None:     # remember where the tech was, so Back returns there
+            self._before_article_resolution = {
+                k: getattr(self, k) for k in ("current_id", "resolution", "resolution_image", "resolution_id",
+                                              "resolution_articles", "outcome", "finished_at", "feedback")}
         self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
         self.article_events.append(ArticleEvent(article_id, ARTICLE_RESOLUTION, now, art.title))
+        self.feedback = None    # a rating belongs to the ending it was given for
         self.current_id = None
         self.outcome = OUTCOME_RESOLVED
         self.resolution = art.as_resolution_text()
