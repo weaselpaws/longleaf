@@ -47,7 +47,7 @@ class PlayerWindow(QMainWindow):
         self.setWindowTitle("Longleaf")
         self.resize(720, 640)
 
-        self.player = PlayerWidget(Tree())
+        self.player = PlayerWidget(Tree(), autofocus_search=True)
         self.setCentralWidget(self.player)
         self.store: SessionStore | None = None
 

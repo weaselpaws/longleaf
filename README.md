@@ -157,6 +157,22 @@ anything still there at the next launch means the Editor died, and it offers to
 recover it. Image files you picked are already copied into `images/`, so they
 survive a crash. (`autosave.py`, GUI-free.)
 
+## Search (Player)
+
+A step can have **search tags** (Editor → step → "Search tags", comma-separated).
+On the Player's start screen the cursor is in a search box: type what you're
+seeing ("wifi keeps dropping") and the best-matching steps are offered, each with
+why it matched; Enter takes the top one, or click another. The session then starts
+at that step, **Back** returns to the start screen, and the report and saved
+session record the query and the landing step (`entry_step_id`, `search_query`).
+Search matches tags first, then the question, note, answers, the fixes the
+answers end at and the KB articles offered; every word must match (prefixes and
+simple plurals count), and if none match everything, steps matching some words
+are shown. Only steps reachable from the start are offered. It is plain word
+matching in `search.py` (GUI-free, unit-tested) — predictable to tune with tags,
+no typo tolerance yet. The query is free text, so it can hold customer details
+like the notes can.
+
 ## Graph view (Editor)
 
 The Editor's right pane has a **Graph** tab beside Live Test: an auto-laid-out,

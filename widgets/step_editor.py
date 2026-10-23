@@ -3,8 +3,10 @@ StepEditor — the form for editing one Step: its question, an optional
 tech-facing note, and its list of answer options.
 """
 
+import re
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QScrollArea
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea
 )
 from PySide6.QtCore import Signal
 
@@ -12,6 +14,17 @@ from engine import Step, Option
 from widgets.image_picker import ImagePicker
 from widgets.option_row import OptionRow
 from widgets.shared_content import article_summary, choose_articles, resolution_label
+
+
+def parse_tags(text: str) -> list[str]:
+    """'wifi, No internet;wifi' -> ['wifi', 'No internet']: split on commas, semicolons and newlines,
+    trimmed, empties and case-insensitive duplicates dropped, order kept."""
+    seen, out = set(), []
+    for t in (p.strip() for p in re.split(r"[,;\n]", text)):
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out
 
 
 class StepEditor(QWidget):
@@ -54,6 +67,12 @@ class StepEditor(QWidget):
         self.note_input.setMaximumHeight(72)
         self.note_input.textChanged.connect(self._on_note_changed)
         root.addWidget(self.note_input)
+
+        root.addWidget(QLabel("Search tags (optional, comma-separated — words a tech might type to find this step):"))
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("e.g. wifi, no internet, blue screen")
+        self.tags_input.textChanged.connect(self._on_tags_changed)
+        root.addWidget(self.tags_input)
 
         root.addWidget(QLabel("Screenshot (optional):"))
         self.image_picker = ImagePicker("No screenshot", base_dir_provider=lambda: self.base_dir_provider())
@@ -130,11 +149,17 @@ class StepEditor(QWidget):
         enabled = step is not None
         self.question_input.setEnabled(enabled)
         self.note_input.setEnabled(enabled)
+        self.tags_input.setEnabled(enabled)
         self.image_picker.setEnabled(enabled)
         self.start_btn.setEnabled(enabled)
 
         self.question_input.blockSignals(True)
         self.note_input.blockSignals(True)
+        tags = step.tags if step else []
+        if parse_tags(self.tags_input.text()) != tags:     # don't reformat what is being typed ("wifi," mid-edit)
+            self.tags_input.blockSignals(True)
+            self.tags_input.setText(", ".join(tags))
+            self.tags_input.blockSignals(False)
         self.question_input.setPlainText(step.question if step else "")
         self.note_input.setPlainText(step.note if step else "")
         self.image_picker.set_path(step.image if step else "")
@@ -194,6 +219,11 @@ class StepEditor(QWidget):
     def _on_question_changed(self):
         if self.step:
             self.step.question = self.question_input.toPlainText()
+            self.changed.emit()
+
+    def _on_tags_changed(self, text: str):
+        if self.step:
+            self.step.tags = parse_tags(text)
             self.changed.emit()
 
     def _on_note_changed(self):

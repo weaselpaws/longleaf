@@ -7,6 +7,7 @@
   "steps": {
     "start": {
       "id": "start",
+      "tags": ["printer", "printing"],
       "question": "What is the printer doing?",
       "note": "Two different branches below end at the same shared fix.",
       "image": "",
@@ -19,6 +20,7 @@
     },
     "queued": {
       "id": "queued",
+      "tags": ["stuck job", "queue", "print queue"],
       "question": "Is there a job stuck at the top of the print queue?",
       "note": "",
       "image": "",
@@ -29,6 +31,7 @@
     },
     "offline": {
       "id": "offline",
+      "tags": ["offline", "printer offline", "not found"],
       "question": "Does Windows list the printer as online in Printers & scanners?",
       "note": "",
       "image": "",
@@ -39,6 +42,7 @@
     },
     "driver": {
       "id": "driver",
+      "tags": ["garbled", "blank pages", "driver", "after update"],
       "question": "Did this start after a recent Windows or driver update?",
       "note": "",
       "image": "",

@@ -660,6 +660,71 @@ with _tf2.TemporaryDirectory() as d:
     assert ec.escalation_id == ""
 print("rejected endings: this-didn't-work, skip tried paths, escalate, Back, report/saved session, Editor flag + escalation card OK")
 
+
+# --- Player search box + Editor tags ---
+from engine import Step as _Step, Option as _Opt
+from widgets.step_editor import parse_tags
+
+assert parse_tags(" wifi, No internet;WIFI\n, ") == ["wifi", "No internet"]
+with _tf2.TemporaryDirectory() as d:
+    st = Tree(title="Help desk", root_id="start", steps={
+        "start": _Step("start", "What is the symptom?", [_Opt("Can't get online", "wifi"), _Opt("Can't print", "printer")]),
+        "wifi": _Step("wifi", "Does the Wi-Fi icon show as connected?", [_Opt("Yes", None, "Power cycle the router."),
+                                                                          _Opt("No", None, "Join the network.")],
+                      tags=["wifi", "no internet"]),
+        "printer": _Step("printer", "Does the printer show as offline?", [_Opt("Yes", None, "Restart the spooler.")], tags=["printer"]),
+    })
+    store = _Store(os.path.join(d, "sessions"))
+    sw = PlayerWidget(st, session_store=store, autofocus_search=True)
+    sw.show()
+    assert not sw.search_input.isHidden() and sw.search_status.isHidden() and sw.answers_layout.count() == 2
+    sw.search_input.setText("no internet")                                                # results replace the question
+    assert sw.question_label.isHidden() and not sw.search_status.isHidden()
+    btns = [sw.answers_layout.itemAt(i).widget() for i in range(sw.answers_layout.count())]
+    assert btns and "Wi-Fi icon" in btns[0].text() and "Tag: no internet" in btns[0].text()
+    sw.search_input.setText("zzzz")
+    assert sw.answers_layout.count() == 0 and "No matches" in sw.search_status.text()
+    sw.search_input.setText("")                                                           # cleared: the normal start screen again
+    assert not sw.question_label.isHidden() and sw.answers_layout.count() == 2 and sw.search_status.isHidden()
+
+    sw.search_input.setText("printer")
+    sw.search_input.returnPressed.emit()                                                  # Enter takes the top result
+    assert sw.engine.current_id == "printer" and sw.engine.entry_step_id == "printer"
+    assert sw.search_input.isHidden() and sw.search_input.text() == "" and sw.back_btn.isEnabled()
+    assert sw.question_label.text().startswith("Does the printer") and sw.answers_layout.count() == 1
+    sw.back_btn.click()                                                                   # Back returns to the start step and its search box
+    assert sw.engine.current_id == "start" and not sw.search_input.isHidden() and sw.engine.entry_step_id is None
+
+    sw.search_input.setText("wifi")
+    btn = sw.answers_layout.itemAt(0).widget()
+    btn.click()                                                                           # or click a result
+    sw._choose(st.steps["wifi"].options[0])
+    assert sw.engine.is_finished and sw.search_input.isHidden()
+    rec = sw.engine.record()
+    assert (rec.entry_step_id, rec.search_query) == ("wifi", "wifi") and "Searched for: wifi" in sw.report_box.toPlainText()
+    (saved,) = store.load_all()
+    assert saved.entry_step_id == "wifi" and saved.search_query == "wifi"
+    sw.restart()
+    assert sw.engine.entry_step_id is None and sw.search_input.text() == "" and not sw.search_input.isHidden()
+    # a one-step flow has nothing to jump to, so no search box
+    one = PlayerWidget(Tree(title="T", root_id="a", steps={"a": _Step("a", "Q", [_Opt("x", None, "r")])}))
+    assert one.search_input.isHidden()
+
+    # Editor: the tags field edits Step.tags without reformatting what is being typed, and is undoable.
+    et = Tree.from_dict(st.to_dict())
+    ed = EditorWidget(et)
+    ed.select_step("printer")
+    ed.step_editor.tags_input.setText("printer, printing,")
+    assert et.steps["printer"].tags == ["printer", "printing"]
+    assert ed.step_editor.tags_input.text() == "printer, printing,"                       # the trailing comma survived the refresh
+    ed.select_step("wifi")
+    assert ed.step_editor.tags_input.text() == "wifi, no internet"
+    ed.select_step("printer")
+    assert ed.step_editor.tags_input.text() == "printer, printing"
+    ed.undo()
+    assert ed.tree.steps["printer"].tags == ["printer"]
+print("search: Player search box (results, Enter, click, Back, record, restart) and Editor tags field OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

@@ -141,6 +141,8 @@ Player asks "Did this solve it?" and stores it via `set_feedback()`; today the r
     {"resolution_id": "wifi_forget_network", "step_id": "step_3", "option_index": 0,
      "text": "Forget the network, then rejoin it.", "at": "2026-10-06T14:03:10-05:00"}
   ],
+  "entry_step_id": "step_2",
+  "search_query": "wifi keeps dropping",
   "history": [
     {"step_id": "step_1", "step_question": "What's the symptom on the device?", "option_index": 0,
      "chosen_label": "No network access at all", "answered_at": "2026-10-06T14:02:20-05:00"},
@@ -169,6 +171,21 @@ in order. `resolution_id` is the shared resolution, or `null` for an inline endi
 told apart by `step_id` + `option_index`, the answer that led to it); `text` is kept so reports stay
 readable. A rejected ending is not the session's `resolution`: the tech is sent back to the step it
 came from and carries on. Old records without the field load with an empty list.
+
+`entry_step_id` and `search_query` are set when the tech searched instead of starting at the first
+question: the step they landed on and what they typed (`null` / `""` otherwise). `history` then
+begins at that step. The query is free text a tech typed, so treat it like `notes`: it can contain
+customer details.
+
+## Search
+
+A step can carry `"tags": ["wifi", "blue screen"]` (omitted when empty): keywords the Player's
+search box matches, beside the step's question, note, answers, the fixes its answers end at, and the
+titles of the KB articles it offers. Every word of the query must match (a prefix or a simple
+plural counts); if nothing matches them all, steps matching some words are offered instead. Tags
+weigh most, then the question, then the rest; ties go to the step nearer the start. Only steps
+reachable from the start are returned. The match runs in the Player from the flow it already has
+(`search.py`), so it needs no server.
 
 ## Shared resolutions and KB articles
 
