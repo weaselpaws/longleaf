@@ -942,6 +942,80 @@ with _tf2.TemporaryDirectory() as d:
     del os.environ[_pm.PERSONAS_DIR_ENV], os.environ[_pm.DATA_DIR_ENV]
 print("personas: discovery, broken persona listed, hot-swap parks + resumes, per-persona notes/store/log, notepad tool, exports, solo mode OK")
 
+
+# --- Editor Analytics mode: load outcome logs, flows/cards/endings/searches, jump to a card, export a summary ---
+import sys as _sys
+_sys.path.insert(0, "scripts")
+import make_sample_log as _gen
+import analytics as _an
+import widgets.analytics_view as _av
+from editor_main import EditorWindow as _EW
+
+with _tf2.TemporaryDirectory() as d:
+    logp = os.path.join(d, "sample.jsonl")
+    _lg = _ol2.OutcomeLog(d)
+    _lg.path = __import__("pathlib").Path(logp)
+    for _e in _gen.generate(sessions=60, days=30, seed=11):
+        _lg.emit(_e)
+    ew = _EW(autosave_dir=os.path.join(d, "auto"))
+    ew.show()
+    assert ew.stack.currentWidget() is ew.editor and ew.edit_mode_action.isChecked()
+    et = Tree.load("examples/it_helpdesk_no_network.json")
+    et.client = "acme-it"
+    ew.editor.tree = et
+    ew.editor._reload_all()
+    ew.set_mode("analytics")
+    assert ew.stack.currentWidget() is ew.analytics and ew.analytics_mode_action.isChecked() and "Analytics" in ew.windowTitle()
+    an = ew.analytics
+    assert not an.empty.isHidden() and an.body.isHidden() and not an.export_btn.isEnabled()          # nothing loaded yet
+
+    n = an.load_files([logp])
+    assert n > 100 and an.empty.isHidden() and not an.body.isHidden()
+    assert an.flow_combo.count() == 4 and an.flow_combo.itemText(0).startswith("All flows")           # all + three flows
+    assert an.analytics.sessions > 60 and an.flows_table.rowCount() == 3
+    assert an.t_sessions.value.text() == str(an.analytics.sessions) and an.t_resolved.value.text().endswith("%")
+    assert an.status_bar.counts and an.trend.bars
+    assert not an.tabs.isTabEnabled(1) and not an.tabs.isTabEnabled(2)                                # cards/endings need one flow
+    sessions_before = an.analytics.sessions
+    assert an.load_files([logp]) == 0 and an.analytics.sessions == sessions_before                    # the same file again adds nothing
+
+    an.flows_table.cellClicked.emit(0, 0)                                                              # click a flow in the ranking
+    assert an.flow_combo.currentIndex() == 1 and an.tabs.isTabEnabled(1) and an.tabs.isTabEnabled(2)
+    assert an.select_flow(("acme-it", "No Network Connectivity")) and not an.select_flow(("nobody", "nothing"))
+    assert an.names_note.text().startswith("Card names are from the flow open")
+    assert an.cards_table.rowCount() > 3 and an.endings_table.rowCount() > 2
+    top = an.cards_table.item(0, 0)
+    assert top.text() != top.data(Qt.UserRole) and top.data(Qt.UserRole) in et.steps                  # readable names, not ids
+    assert an.cards_table.item(0, 2).text().isdigit() and int(an.cards_table.item(0, 2).text()) >= 1  # most "left here" first
+    assert an.nores_table.rowCount() >= 0 and an.search_table.rowCount() >= 1
+    an.cards_table.cellDoubleClicked.emit(0, 0)                                                        # jump to that card in the editor
+    assert ew.stack.currentWidget() is ew.editor and ew.editor.outline_list.currentItem().data(Qt.UserRole) == top.data(Qt.UserRole)
+    ew.set_mode("analytics")
+    assert an.select_flow(("globex-support", "Support Ticket Triage"))
+    assert "Open this flow" in an.names_note.text() and an.cards_table.item(0, 0).text() == an.cards_table.item(0, 0).data(Qt.UserRole)
+
+    md = os.path.join(d, "review.md")
+    an.export_summary(md)
+    txt = open(md, encoding="utf-8").read()
+    assert txt.startswith("# Flow review — globex-support") and "## At a glance" in txt
+    an.flow_combo.setCurrentIndex(0)
+    an.export_summary(md)
+    assert open(md, encoding="utf-8").read().startswith("# Flow review — All flows")
+
+    bad = os.path.join(d, "bad.jsonl")
+    open(bad, "w").write("nope\n")
+    warned = []
+    QMessageBox.warning = staticmethod(lambda parent, title, text: warned.append(text))
+    before = an.analytics.events
+    an.load_files([bad])
+    assert warned and "bad.jsonl" in warned[0] and an.analytics.events == before                      # reported, nothing lost
+    an.clear()
+    assert an.analytics is None and not an.empty.isHidden() and an.flow_combo.count() == 0
+    ew.set_mode("edit")
+    assert ew.stack.currentWidget() is ew.editor
+    ew.close()
+print("analytics: Editor mode, flows/cards/endings/searches, card names, jump to card, summary export, bad + repeated files OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

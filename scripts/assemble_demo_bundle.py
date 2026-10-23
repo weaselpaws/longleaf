@@ -1,6 +1,6 @@
 """Assemble the folder a tester downloads from the Windows build: the demo Player exe, the Editor exe,
 a personas/ folder beside the Player (so the persona switcher is there to try), the demo flow with its
-images, and a short checklist.
+images, a made-up sample outcome log to try the Editor's Analytics with, and a short checklist.
 
 Usage: python scripts/assemble_demo_bundle.py <out-dir> <player-exe> [<editor-exe>] [<demo-flow-dir>]
 """
@@ -35,6 +35,12 @@ Editor
   1. File > Open Flow: demo-flow\\flow.json. Edit something, then Edit > Undo / Redo (Ctrl+Z, Ctrl+Y).
   2. Close it without saving after an edit: the next launch offers to recover your work.
   3. Shared... opens shared resolutions and KB articles; the step form has Search tags and KB articles.
+  4. Analytics (the second button in the toolbar, Ctrl+2): "Open outcome logs..." and choose
+     sample-data\\outcome-log-SAMPLE.jsonl. It is MADE-UP data (three flows, a month of calls) so there is
+     something to look at. Try: the flow picker, the Cards tab (amber = where techs give up; open the
+     flow personas\\acme-it\\flow.json in the Editor to see card names), Endings (orange = fixes techs keep rejecting),
+     Searches (what found nothing), Export summary... (a Markdown review you could send a client).
+     To look at your own calls, use the Player's File > Export Outcome Log... and open that file instead.
 """
 
 
@@ -48,6 +54,15 @@ def main(out: Path, player: Path, editor: Path | None, demo_dir: Path | None):
     shutil.copytree(ROOT / "examples" / "personas", out / "personas")
     if demo_dir and demo_dir.is_dir():
         shutil.copytree(demo_dir, out / "demo-flow")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import make_sample_log
+    import outcome_log
+    sample = out / "sample-data" / "outcome-log-SAMPLE.jsonl"
+    sample.parent.mkdir()
+    log = outcome_log.OutcomeLog(sample.parent)
+    log.path = sample
+    for event in make_sample_log.generate():
+        log.emit(event)
     (out / "TRY-ME.txt").write_text(TRY_ME, encoding="utf-8")
     print("assembled", out, sorted(p.name for p in out.iterdir()))
 

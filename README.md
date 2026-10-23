@@ -194,6 +194,34 @@ reset, parked, abandoned or taken back from its ending is still saved, as in pro
 call center build, build the Player as usual and put the `personas/` folder next to the
 exe (`build_client_release.py` does not copy it yet).
 
+## Analytics (Editor)
+
+The Editor has two modes, switched in the toolbar or with **Ctrl+1 / Ctrl+2**: the flow
+editor, and **Analytics**. In Analytics, **Open outcome logs…** takes one or more
+files the Player exported (File → Export Outcome Log…, from different machines or
+weeks; repeated events are ignored) and shows, for all flows or one:
+
+- **Overview**: sessions, how many were solved (of those the tech rated), how many
+  reached an ending, how many left or started over; a bar of how sessions ended; sessions
+  per day stacked by outcome; and the flows ranked by use. The "solved" tile shows the
+  change against the previous week.
+- **Cards**: visits per card and how many sessions ended with the tech leaving or
+  starting over on it (amber when 30%+ of visits). Double-click a card to open it in the
+  flow editor. Card names come from the flow open in the Editor when it is the same flow
+  (same client and title); otherwise you see step ids.
+- **Endings**: how often each was reached, solved, and rejected (orange when rejected in
+  half of 3+ sightings; red when most who rated it said it didn't help).
+- **Searches**: what techs searched for, and the searches that found nothing, which are
+  the tags to add.
+- **Export summary…** writes a Markdown flow review (at a glance, where techs give up,
+  fixes they reject, searches, busiest cards) for the recurring review service.
+
+Statuses are never told apart by colour alone: every one has a glyph and a label with
+its count, "didn't solve it" is hatched, and bars have hover tooltips. The logic is in
+`analytics.py` (GUI-free, unit-tested); both it and the view are Editor-only and kept out of
+the Player by the build guard. `python scripts/make_sample_log.py out.jsonl` writes a month
+of **made-up** calls across three flows to try it on (the Windows test bundle includes one).
+
 ## Outcome log (Player)
 
 Beside the full session files, the Player keeps one plain log per client:

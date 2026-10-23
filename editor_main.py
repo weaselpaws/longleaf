@@ -10,13 +10,14 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget, QToolBar, QWidget
 from PySide6.QtCore import QEvent, QStandardPaths, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 
 from autosave import AutosaveStore
 from engine import Tree
 from theme import apply_theme
+from widgets.analytics_view import AnalyticsWidget
 from widgets.editor_widget import EditorWidget
 
 
@@ -39,9 +40,15 @@ class EditorWindow(QMainWindow):
         self.autosave = AutosaveStore(autosave_dir or default_autosave_dir())
         self.editor.set_autosave_store(self.autosave)
         self.editor.dirty_changed.connect(self._update_title)
-        self.setCentralWidget(self.editor)
+        self.analytics = AnalyticsWidget()
+        self.analytics.step_selected.connect(self._jump_to_step)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.editor)
+        self.stack.addWidget(self.analytics)
+        self.setCentralWidget(self.stack)
 
         self._build_menu()
+        self._build_mode_bar()
         self._update_title(False)
 
     def _build_menu(self):
@@ -99,6 +106,40 @@ class EditorWindow(QMainWindow):
                 return True      # the text box never sees it, so the shortcut fires
         return super().eventFilter(obj, event)
 
+    def _build_mode_bar(self):
+        """Two modes in one window: editing a flow, and looking at how flows are doing (Analytics)."""
+        bar = QToolBar("Mode", self)
+        bar.setMovable(False)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.edit_mode_action = QAction("Flow editor", self, checkable=True, checked=True)
+        self.edit_mode_action.setShortcut(QKeySequence("Ctrl+1"))
+        self.analytics_mode_action = QAction("Analytics", self, checkable=True)
+        self.analytics_mode_action.setShortcut(QKeySequence("Ctrl+2"))
+        for a in (self.edit_mode_action, self.analytics_mode_action):
+            group.addAction(a)
+            bar.addAction(a)
+        self.edit_mode_action.triggered.connect(lambda: self.set_mode("edit"))
+        self.analytics_mode_action.triggered.connect(lambda: self.set_mode("analytics"))
+        self.addToolBar(bar)
+        view = self.menuBar().addMenu("&View")
+        view.addAction(self.edit_mode_action)
+        view.addAction(self.analytics_mode_action)
+
+    def set_mode(self, mode: str):
+        if mode == "analytics":
+            self.analytics.set_tree(self.editor.tree)       # so cards and endings get readable names
+            self.stack.setCurrentWidget(self.analytics)
+            self.analytics_mode_action.setChecked(True)
+        else:
+            self.stack.setCurrentWidget(self.editor)
+            self.edit_mode_action.setChecked(True)
+        self._update_title(self.editor._dirty)
+
+    def _jump_to_step(self, step_id: str):
+        self.set_mode("edit")
+        self.editor.select_step(step_id)
+
     def _update_history_actions(self, can_undo: bool, can_redo: bool):
         self.undo_action.setEnabled(can_undo)
         self.redo_action.setEnabled(can_redo)
@@ -128,6 +169,9 @@ class EditorWindow(QMainWindow):
         return False
 
     def _update_title(self, dirty: bool):
+        if self.stack.currentWidget() is self.analytics:
+            self.setWindowTitle("Longleaf Editor — Analytics")
+            return
         name = self.editor.current_path or "Untitled Flow"
         star = " *" if dirty else ""
         self.setWindowTitle(f"Longleaf Editor — {name}{star}")
