@@ -37,6 +37,12 @@ OUTCOME_RESOLVED = "resolved"
 OUTCOME_IN_PROGRESS = "in_progress"
 OUTCOME_ERROR = "error"      # the flow itself is broken (e.g. an answer points at a missing step)
 
+# State of an answer once some endings have been rejected (TroubleshootEngine.option_states).
+OPTION_OK = "ok"
+OPTION_TRIED = "tried"            # ends at a resolution already marked "didn't work"
+OPTION_EXHAUSTED = "exhausted"    # every ending it can lead to has been rejected
+DEFAULT_ESCALATION = "Every suggested fix on this path has been tried. Escalate this ticket."
+
 # What a tech did with a KB article during a session.
 ARTICLE_READ = "read"              # opened it for clarity / adjacent info
 ARTICLE_ATTACH = "attach"          # attached it to the ticket
@@ -288,6 +294,7 @@ class Tree:
     branding: Branding = field(default_factory=Branding)
     resolutions: dict[str, Resolution] = field(default_factory=dict)   # shared endings, by id
     articles: dict[str, Article] = field(default_factory=dict)         # KB articles, by id
+    escalation_id: str = ""   # shared resolution offered when every fix on a path has been tried and rejected
 
     def to_dict(self) -> dict:
         return {
@@ -300,6 +307,7 @@ class Tree:
             "steps": {sid: s.to_dict() for sid, s in self.steps.items()},
             **({"resolutions": {rid: r.to_dict() for rid, r in self.resolutions.items()}} if self.resolutions else {}),
             **({"articles": {aid: a.to_dict() for aid, a in self.articles.items()}} if self.articles else {}),
+            **({"escalation_resolution": self.escalation_id} if self.escalation_id else {}),
         }
 
     @staticmethod
@@ -324,6 +332,7 @@ class Tree:
             branding=Branding.from_dict(d.get("branding")),
             resolutions={rid: Resolution.from_dict(r, default_id=rid) for rid, r in raw_res.items()},
             articles={aid: Article.from_dict(a, default_id=aid) for aid, a in raw_art.items()},
+            escalation_id=str(d.get("escalation_resolution") or ""),
         )
 
     def save(self, path: str):
@@ -377,6 +386,8 @@ class Tree:
     def delete_resolution(self, resolution_id: str):
         """Remove a shared ending; answers that pointed at it are left with no ending (validation flags them)."""
         self.resolutions.pop(resolution_id, None)
+        if self.escalation_id == resolution_id:
+            self.escalation_id = ""
         for s in self.steps.values():
             for o in s.options:
                 if o.resolution_id == resolution_id:
@@ -391,6 +402,27 @@ class Tree:
         self.articles.pop(article_id, None)
         for holder in (*self.steps.values(), *self.resolutions.values()):
             holder.articles = [a for a in holder.articles if a != article_id]
+
+    def ending_key(self, step_id: str, option_index: int):
+        """Which ending an answer leads to, for grouping: the shared resolution's id, or
+        (step id, answer index) for an inline ending. Two paths to one shared resolution
+        are one ending."""
+        return self.steps[step_id].options[option_index].resolution_id or (step_id, option_index)
+
+    def endings_from(self, step_id: str) -> set:
+        """Keys (see ending_key) of every ending reachable from `step_id`, following all answers."""
+        found, seen, todo = set(), set(), [step_id]
+        while todo:
+            sid = todo.pop()
+            if sid in seen or sid not in self.steps:
+                continue
+            seen.add(sid)
+            for i, o in enumerate(self.steps[sid].options):
+                if o.is_terminal:
+                    found.add(self.ending_key(sid, i))
+                else:
+                    todo.append(o.next_id)
+        return found
 
     def ending_for(self, option: Option) -> Optional[Ending]:
         """What an ending answer resolves to: the shared Resolution it points at,
@@ -604,6 +636,11 @@ class Tree:
 
         # Shared resolutions and KB articles.
         used_resolutions = {o.resolution_id for s in self.steps.values() for o in s.options if o.resolution_id}
+        if self.escalation_id:
+            used_resolutions.add(self.escalation_id)
+            if self.escalation_id not in self.resolutions:
+                add(SEVERITY_ERROR, "MISSING_ESCALATION",
+                    f"The escalation resolution ('{self.escalation_id}') doesn't exist.")
         for rid, res in self.resolutions.items():
             if res.id != rid:
                 add(SEVERITY_ERROR, "ID_MISMATCH",
@@ -719,6 +756,30 @@ class ArticleEvent:
 
 
 @dataclass
+class RejectedResolution:
+    """An ending the tech marked "didn't work" during a session. `resolution_id` is
+    set for a shared resolution; an inline ending is told apart by step id + answer
+    index. The text is kept so reports stay readable."""
+    resolution_id: Optional[str]
+    step_id: str
+    option_index: int
+    text: str
+    at: str   # ISO-8601 with UTC offset
+
+    @property
+    def key(self):
+        return self.resolution_id or (self.step_id, self.option_index)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "RejectedResolution":
+        return RejectedResolution(resolution_id=d.get("resolution_id") or None, step_id=d.get("step_id", ""),
+                                  option_index=int(d.get("option_index", -1)), text=d.get("text", ""), at=d.get("at", ""))
+
+
+@dataclass
 class SessionRecord:
     """A finished (or in-progress) pass through a flow, as plain data.
 
@@ -743,6 +804,7 @@ class SessionRecord:
     feedback: Optional[dict] = None   # {"helpful": bool | None, "comment": str} — reserved, see docs/API.md
     resolution_id: Optional[str] = None   # the shared Resolution reached, if the ending was one
     articles: list[ArticleEvent] = field(default_factory=list)   # KB articles read / attached / used
+    rejected_resolutions: list[RejectedResolution] = field(default_factory=list)   # endings the tech marked "didn't work"
     schema_version: int = SCHEMA_VERSION
 
     # ---- serialization ----
@@ -762,6 +824,7 @@ class SessionRecord:
             "feedback": self.feedback,
             "resolution_id": self.resolution_id,
             "articles": [a.to_dict() for a in self.articles],
+            "rejected_resolutions": [r.to_dict() for r in self.rejected_resolutions],
             "history": [h.to_dict() for h in self.history],
         }
 
@@ -784,6 +847,7 @@ class SessionRecord:
             feedback=d.get("feedback"),
             resolution_id=d.get("resolution_id"),
             articles=[ArticleEvent.from_dict(a) for a in d.get("articles", [])],
+            rejected_resolutions=[RejectedResolution.from_dict(r) for r in d.get("rejected_resolutions", [])],
             schema_version=d.get("schema_version", SCHEMA_VERSION),
         )
 
@@ -806,6 +870,7 @@ class SessionRecord:
             ("Ticket", self.ticket_ref),
             ("Technician", self.operator),
             ("KB attached", "; ".join(a.title or a.article_id for a in self.articles if a.action == ARTICLE_ATTACH)),
+            ("Tried, didn't work", "; ".join(" ".join(r.text.split())[:80] for r in self.rejected_resolutions)),
             ("Started", _fmt_stamp(self.started_at)),
             ("Duration", _fmt_duration(self.started_at, self.finished_at)),
             ("Session", self.session_id[:8]),
@@ -901,7 +966,9 @@ class TroubleshootEngine:
         self.resolution_id = None
         self.resolution_articles = []
         self.article_events = []
-        self._before_article_resolution: Optional[dict] = None
+        self.rejected: list[RejectedResolution] = []
+        self.escalated = False
+        self._before_override: Optional[dict] = None
         self.outcome = OUTCOME_IN_PROGRESS
         self.session_id = str(uuid.uuid4())
         self.started_at = _now().isoformat()
@@ -922,7 +989,8 @@ class TroubleshootEngine:
         return self.resolution is not None or self.current_step is None
 
     def choose(self, option: Option):
-        """Answer the current step. `option` must be one of its options."""
+        """Answer the current step. `option` must be one of its options, and not one that
+        only leads to endings the tech has already rejected (see option_states())."""
         step = self.current_step
         if not step or self.is_finished:
             return
@@ -931,6 +999,8 @@ class TroubleshootEngine:
             idx = next((i for i, o in enumerate(step.options) if o == option), None)
         if idx is None:
             raise ValueError(f"Option {option.label!r} does not belong to step {step.id!r}.")
+        if self.option_states()[idx] != OPTION_OK:
+            raise ValueError(f"Answer {option.label!r} only leads to fixes already tried; see option_states().")
 
         self.history.append(HistoryEntry(
             step_id=self.current_id,   # the key we navigated by, not the step's self-reported id
@@ -970,16 +1040,17 @@ class TroubleshootEngine:
                 self.resolution_articles = list(ending.articles)
 
     def can_go_back(self) -> bool:
-        return len(self.history) > 0 or self._before_article_resolution is not None
+        return len(self.history) > 0 or self._before_override is not None
 
     def go_back(self):
         """Undo the last answer and return to the step it was asked from.
         If the session was finished by using a KB article as the resolution,
         this undoes just that and returns to where the article was used."""
-        if self._before_article_resolution is not None:
-            before, self._before_article_resolution = self._before_article_resolution, None
+        if self._before_override is not None:
+            before, self._before_override = self._before_override, None
             for k, v in before.items():
                 setattr(self, k, v)
+            self.escalated = False
             self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
             return
         if not self.history:
@@ -995,6 +1066,78 @@ class TroubleshootEngine:
         self.outcome = OUTCOME_IN_PROGRESS
         self.finished_at = None
         self.feedback = None
+
+    # ---------- rejected endings ----------
+
+    def rejected_keys(self) -> set:
+        return {r.key for r in self.rejected}
+
+    def option_states(self) -> list[str]:
+        """For each answer on the current step: OPTION_OK, OPTION_TRIED (it ends at a resolution
+        the tech marked "didn't work") or OPTION_EXHAUSTED (every ending it can lead to has been
+        rejected). The Player disables the latter two instead of sending the tech round again."""
+        step = self.current_step
+        if step is None:
+            return []
+        rejected = self.rejected_keys()
+        states = []
+        for i, o in enumerate(step.options):
+            if not rejected:
+                states.append(OPTION_OK)
+            elif o.is_terminal:
+                states.append(OPTION_TRIED if self.tree.ending_key(step.id, i) in rejected else OPTION_OK)
+            else:
+                ends = self.tree.endings_from(o.next_id)
+                states.append(OPTION_EXHAUSTED if ends and ends <= rejected else OPTION_OK)
+        return states
+
+    def nothing_left(self) -> bool:
+        """True when the current step has answers but every one only leads to rejected endings."""
+        states = self.option_states()
+        return bool(states) and all(st != OPTION_OK for st in states)
+
+    def can_reject(self) -> bool:
+        """A real ending (not an error, an article, or the escalation card) can be marked "didn't work"."""
+        if not (self.is_finished and self.outcome == OUTCOME_RESOLVED and self.history
+                and self._before_override is None and not self.escalated):
+            return False
+        last = self.history[-1]
+        step = self.tree.steps.get(last.step_id)
+        return step is not None and 0 <= last.option_index < len(step.options) and step.options[last.option_index].is_terminal
+
+    def reject_current_ending(self) -> RejectedResolution:
+        """The tech says the ending they reached didn't work. It is remembered for the rest of the
+        session and they are returned to the step it came from, where that answer (and any answer
+        leading only to rejected endings) is now unavailable."""
+        if not self.can_reject():
+            raise ValueError("There is no ending to reject.")
+        last = self.history[-1]
+        entry = RejectedResolution(resolution_id=self.resolution_id, step_id=last.step_id,
+                                   option_index=last.option_index, text=self.resolution or "", at=_now().isoformat())
+        self.go_back()
+        self.rejected.append(entry)
+        return entry
+
+    def escalate(self) -> None:
+        """Finish with the flow's designated escalation card (or a plain default) when nothing
+        on the current path is left to try. Back returns to where the tech was."""
+        if self.is_finished:
+            return
+        if self._before_override is None:
+            self._before_override = {
+                k: getattr(self, k) for k in ("current_id", "resolution", "resolution_image", "resolution_id",
+                                              "resolution_articles", "outcome", "finished_at", "feedback")}
+        res = self.tree.resolutions.get(self.tree.escalation_id) if self.tree.escalation_id else None
+        self.current_id = None
+        self.outcome = OUTCOME_RESOLVED
+        self.escalated = True
+        self.finished_at = _now().isoformat()
+        if res is not None:
+            self.resolution, self.resolution_image = res.text or DEFAULT_ESCALATION, res.image
+            self.resolution_id, self.resolution_articles = res.id, list(res.articles)
+        else:
+            self.resolution, self.resolution_image = DEFAULT_ESCALATION, ""
+            self.resolution_id, self.resolution_articles = None, []
 
     # ---------- KB articles ----------
 
@@ -1024,8 +1167,8 @@ class TroubleshootEngine:
         if art is None:
             raise ValueError(f"No KB article {article_id!r} in this flow.")
         now = _now().isoformat()
-        if self._before_article_resolution is None:     # remember where the tech was, so Back returns there
-            self._before_article_resolution = {
+        if self._before_override is None:     # remember where the tech was, so Back returns there
+            self._before_override = {
                 k: getattr(self, k) for k in ("current_id", "resolution", "resolution_image", "resolution_id",
                                               "resolution_articles", "outcome", "finished_at", "feedback")}
         self.article_events = [e for e in self.article_events if e.action != ARTICLE_RESOLUTION]
@@ -1062,6 +1205,7 @@ class TroubleshootEngine:
             feedback=self.feedback,
             resolution_id=self.resolution_id,
             articles=list(self.article_events),
+            rejected_resolutions=list(self.rejected),
         )
 
     def report_text(self) -> str:

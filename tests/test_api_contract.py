@@ -62,6 +62,8 @@ def test_every_documented_issue_code_exists_and_vice_versa():
         resolutions={"empty": Resolution("empty", " "), "unused": Resolution("unused", "t")},
         articles={"blank": Article("blank", ""), "unused": Article("unused", "t")})
     emitted |= {i.code for i in t3.check()}
+    emitted |= {i.code for i in Tree(title="T", root_id="a", steps={"a": Step("a", "A", [Option("x", None, "r")])},
+                                    escalation_id="nope").check()}
     assert emitted == documented, (emitted ^ documented)
 
 

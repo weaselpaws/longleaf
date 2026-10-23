@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import Option, Resolution, Step, Tree, TroubleshootEngine, OUTCOME_ERROR  # noqa: E402
 from feedback import (  # noqa: E402
-    FeedbackFormatError, FlowFeedback, SessionStore, analyze, ending_key, foreign_sessions, step_feedback_text, build_bundle, load_bundle, merge_records, summarize, write_bundle,
+    HIGH_REJECTION_MIN, FeedbackFormatError, FlowFeedback, SessionStore, analyze, ending_key, foreign_sessions, step_feedback_text, build_bundle, load_bundle, merge_records, summarize, write_bundle,
 )
 
 
@@ -241,3 +241,65 @@ def test_ending_key_and_text_panels_use_the_combined_stat():
     assert "ends here, 0% helpful of 2" in step_feedback_text(t, fb, "c")
     out = summarize(t, fb)
     assert "shared resolution “Reseat the cable.”: 0% helpful of 2" in out
+
+
+# ---------- rejected endings ----------
+
+def rejecting_run(tree, first, reject=True, helpful=None):
+    """a -> step (b or c) -> the shared ending 'fix'. The tech rejects it, then takes what is left
+    (an inline answer on b) or escalates when nothing is."""
+    e = TroubleshootEngine(tree)
+    e.choose(e.current_step.options[first])
+    e.choose(e.current_step.options[0])
+    if reject:
+        e.reject_current_ending()
+        if e.nothing_left():
+            e.escalate()
+        else:
+            e.choose(e.current_step.options[e.option_states().index("ok")])
+    if helpful is not None:
+        e.set_feedback(helpful)
+    return e.record()
+
+
+def test_rejections_count_against_the_ending_whatever_path_reached_it():
+    t = shared_flow()
+    recs = [rejecting_run(t, 0), rejecting_run(t, 1), run(t, [0, 0], helpful=True), run(t, [1, 0], helpful=True)]
+    fb = analyze(t, recs)
+    stat = fb.endings["fix"]
+    assert (stat.rejected, stat.count, stat.reached) == (2, 2, 4)
+    assert stat.rejection_rate == 0.5 and stat.high_rejection and HIGH_REJECTION_MIN == 3
+    assert stat.helpful == 2 and fb.helpful == 2                      # helpful-rate still reflects only finished endings
+
+
+def test_one_rejection_is_not_enough_to_flag_an_ending():
+    t = shared_flow()
+    stat = analyze(t, [rejecting_run(t, 0)]).endings["fix"]
+    assert stat.rejected == 1 and stat.rejection_rate is not None and not stat.high_rejection     # too few sessions to say
+
+
+def test_rejections_of_inline_endings_and_vanished_endings():
+    t = shared_flow()
+    e = TroubleshootEngine(t)
+    e.choose(e.current_step.options[0])
+    e.choose(e.current_step.options[1])                                 # b's inline ending
+    e.reject_current_ending()
+    e.go_back()
+    e.choose(e.current_step.options[0])
+    rec = e.record()
+    assert analyze(t, [rec]).endings[("b", 1)].rejected == 1
+    t.steps["b"].options[1].next_id = "c"                               # the answer no longer ends the flow
+    assert ("b", 1) not in analyze(t, [rec]).endings
+    rec.rejected_resolutions[0].resolution_id = "gone"                  # a shared ending this flow no longer has
+    rec.rejected_resolutions[0].text = ""
+    assert analyze(shared_flow(), [rec]).endings.get("gone") is None
+
+
+def test_summary_and_step_panel_call_out_rejected_endings():
+    t = shared_flow()
+    recs = [rejecting_run(t, 0), rejecting_run(t, 0), rejecting_run(t, 1), run(t, [0, 0], helpful=True)]
+    fb = analyze(t, recs)
+    out = summarize(t, fb)
+    assert "Endings techs keep rejecting" in out and "shared resolution “Reseat the cable.”: rejected 3 of 4 times (75%)" in out
+    assert "rejected 3 of 4 times" in step_feedback_text(t, fb, "b")
+    assert "rejected" not in summarize(t, analyze(t, [run(t, [0, 0], helpful=True)]))

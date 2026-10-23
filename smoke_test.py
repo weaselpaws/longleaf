@@ -565,6 +565,101 @@ with _tf2.TemporaryDirectory() as d:
     assert list(bw.articles_panel._rows) == ["kb_spooler"]
 print("player: KB articles read / attach / use as resolution, back, report, saved session OK")
 
+
+# --- Player + Editor: rejected endings ("This didn't work"), skipping, escalation, overlay flag ---
+from engine import Resolution as _Res
+from feedback import analyze as _analyze, write_bundle as _write_bundle
+
+with _tf2.TemporaryDirectory() as d:
+    rt = Tree.load("examples/shared_resolutions_and_kb.json")
+    rt.resolutions["escalate"] = _Res("escalate", "Call the print vendor.")
+    rt.escalation_id = "escalate"
+    assert not [i for i in rt.check() if i.is_error]
+    store = _Store(os.path.join(d, "sessions"))
+    pw = PlayerWidget(rt, session_store=store)
+    pw.show()
+    assert pw.reject_btn.isHidden() and pw.escalate_btn.isHidden() and pw.tried_label.isHidden()
+    pw._choose(rt.steps["start"].options[1])                                              # offline
+    pw._choose(rt.steps["offline"].options[0])                                            # shared "restart_spooler"
+    assert pw.engine.resolution_id == "restart_spooler" and not pw.reject_btn.isHidden() and store.count() == 1
+    pw.reject_btn.click()                                                                 # it didn't work
+    assert not pw.engine.is_finished and pw.engine.current_id == "offline" and store.count() == 0
+    assert not pw.tried_label.isHidden() and "Restart the Print Spooler" in pw.tried_label.text()
+    btns = [pw.answers_layout.itemAt(i).widget() for i in range(pw.answers_layout.count())]
+    assert [b.isEnabled() for b in btns] == [False, True] and "already tried" in btns[0].text()
+    assert pw.escalate_btn.isHidden()                                                     # the other answer is still available
+    pw.back_btn.click()                                                                   # back to the start step
+    btns = [pw.answers_layout.itemAt(i).widget() for i in range(pw.answers_layout.count())]
+    assert [b.isEnabled() for b in btns] == [True, True, True]                            # queued still has "No" -> offline -> a cable fix
+    pw._choose(rt.steps["start"].options[0])                                              # queued: "Yes" ends at restart_spooler
+    btns = [pw.answers_layout.itemAt(i).widget() for i in range(pw.answers_layout.count())]
+    assert btns[0].isEnabled() is False and "already tried" in btns[0].text() and btns[1].isEnabled()   # same shared ending, other path
+    pw._choose(rt.steps["queued"].options[1])                                             # "No" -> offline
+    pw._choose(rt.steps["offline"].options[1])                                            # inline "power cycle" ending
+    assert pw.engine.resolution_id is None and not pw.reject_btn.isHidden()
+    pw.reject_btn.click()                                                                 # reject that one too: nothing left here
+    assert pw.engine.nothing_left() and not pw.escalate_btn.isHidden()
+    assert all(not pw.answers_layout.itemAt(i).widget().isEnabled() for i in range(pw.answers_layout.count()))
+    pw.escalate_btn.click()                                                               # the designated escalation card
+    assert pw.engine.is_finished and "Call the print vendor" in pw.resolution_label.text()
+    assert pw.reject_btn.isHidden() and not pw.tried_label.isHidden()
+    rec = pw.engine.record()
+    assert rec.resolution_id == "escalate" and len(rec.rejected_resolutions) == 2
+    assert "Tried, didn't work:" in pw.report_box.toPlainText()
+    pw.flush()
+    (saved,) = store.load_all()
+    assert len(saved.rejected_resolutions) == 2
+    pw.back_btn.click()
+    assert pw.engine.current_id == "offline" and not pw.escalate_btn.isHidden() and not pw.engine.is_finished   # still stuck there; Back undid only the escalation
+    pw.restart()
+    assert pw.engine.rejected == [] and pw.tried_label.isHidden()
+
+    # Without a designated card the Player still says what to do.
+    rt2 = Tree.load("examples/shared_resolutions_and_kb.json")
+    p2 = PlayerWidget(rt2)
+    p2._choose(rt2.steps["start"].options[2])                                             # driver
+    p2._choose(rt2.steps["driver"].options[0])                                            # shared reinstall_driver
+    p2.reject_btn.click()
+    p2.back_btn.click()
+    p2._choose(rt2.steps["start"].options[2])
+    assert [b for b in range(p2.answers_layout.count()) if p2.answers_layout.itemAt(b).widget().isEnabled()] == [1]
+
+    # Editor: three sessions that rejected the same shared ending flag it on the graph and in the summary.
+    et = Tree.load("examples/shared_resolutions_and_kb.json")
+    recs = []
+    for _ in range(3):
+        e = TroubleshootEngine(et)
+        e.choose(e.current_step.options[1])
+        e.choose(e.current_step.options[0])
+        e.reject_current_ending()
+        e.choose(e.current_step.options[1])
+        recs.append(e.record())
+    bpath = os.path.join(d, "rej.json")
+    _write_bundle(bpath, recs, et)
+    shown = []
+    QMessageBox.information = staticmethod(lambda parent, title, text: shown.append(text))
+    edr = EditorWidget(et)
+    edr.import_feedback_files([bpath])
+    assert "Endings techs keep rejecting" in shown[-1] and "rejected 3 of 3 times (100%)" in shown[-1]
+    tips = " ".join(i.toolTip() for i in edr.graph.view.scene().items() if hasattr(i, "toolTip"))
+    assert "Rejected 3 of 3 times" in tips
+    edr.select_step("offline")
+    assert "rejected 3 of 3 times" in edr.step_editor.feedback_box.toPlainText()
+
+    # Editor dialog: designate / clear the escalation card; deleting it clears the designation.
+    from widgets.shared_content import SharedContentDialog as _Dlg
+    ec = Tree.from_dict(et.to_dict())
+    dlg = _Dlg(ec, lambda: None)
+    dlg.resolutions_tab.list.setCurrentRow(1)
+    dlg.resolutions_tab.escalation_check.setChecked(True)
+    assert ec.escalation_id == "reinstall_driver" and "escalation card" in dlg.resolutions_tab.used_label.text()
+    dlg.resolutions_tab.list.setCurrentRow(0)
+    assert not dlg.resolutions_tab.escalation_check.isChecked() and ec.escalation_id == "reinstall_driver"
+    dlg.resolutions_tab.list.setCurrentRow(1)
+    dlg.resolutions_tab.escalation_check.setChecked(False)
+    assert ec.escalation_id == ""
+print("rejected endings: this-didn't-work, skip tried paths, escalate, Back, report/saved session, Editor flag + escalation card OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

@@ -290,6 +290,8 @@ class GraphView(QGraphicsView):
         rate = stat.helpful_rate if stat else None
         if rate is not None and rate < 0.5:
             color = theme.RED                      # techs found this ending unhelpful
+        elif stat is not None and stat.high_rejection:
+            color = theme.ORANGE                   # techs keep marking it "didn't work" and moving on
         node = _Node(box, step_id, self.node_clicked.emit)
         fill = QColor(color)
         fill.setAlphaF(0.30 if taken else 0.10)
@@ -311,12 +313,16 @@ class GraphView(QGraphicsView):
             detail = f"{stat.count} session{'s' if stat.count != 1 else ''}"
             if stat.rated:
                 detail += f" · {round(100 * stat.helpful_rate)}% helpful"
+            if stat.rejected:
+                detail += f" · {'⚠ ' if stat.high_rejection else ''}rejected {stat.rejected}×"
         small = QFont(self.font())
         small.setPointSize(8)
         sub = self._text(detail, node, small, theme.TEXT_DIM, int(box.width()) - 20)
         sub.setPos(box.x() + 10, box.y() + 6 + line_h + 2)
         if stat is not None:
-            node.setToolTip(f"{tip}\n\n{detail}" + (f" ({stat.helpful} yes, {stat.unhelpful} no)" if stat.rated else ""))
+            node.setToolTip(f"{tip}\n\n{detail}" + (f" ({stat.helpful} yes, {stat.unhelpful} no)" if stat.rated else "")
+                            + (f"\nRejected {stat.rejected} of {stat.reached} times ({round(100 * stat.rejection_rate)}%)"
+                               if stat.rejected else ""))
 
     def _draw_edge(self, a: QRectF, b: QRectF, label: str, index: int, n_options: int, traffic, taken: bool, broken: bool, backwards: bool):
         if backwards:   # loop or same-column link: route underneath so it can't cut through boxes
