@@ -132,3 +132,24 @@ def test_the_documented_stream_folds_as_described():
     assert got["8f1c0d2e"].status == olog.STATUS_ABANDONED and got["8f1c0d2e"].ticket_ref == "INC-4471"
     assert got["8f1c0d2e"].rejected == 1 and got["8f1c0d2e"].search_query == "wifi keeps dropping"
     assert got["a0b1c2d3"].status == olog.STATUS_IN_PROGRESS
+
+
+def test_resets_parks_and_backs_are_counted_and_chains_are_recoverable():
+    events = [
+        ev(olog.STARTED, sid="one", restarted_from=None, restart_count=0), ev(olog.ANSWERED, sid="one", step_id="a", option_index=0),
+        ev(olog.BACK, sid="one", from_step_id="b"), ev(olog.BACK, sid="one", from_step_id="a"),
+        ev(olog.RESET, sid="one", last_step_id="a", answers=1, restart_count=1),
+        ev(olog.STARTED, sid="two", restarted_from="one", restart_count=1), ev(olog.ANSWERED, sid="two", step_id="a", option_index=1),
+        ev(olog.RESET, sid="two", last_step_id="a", answers=1, restart_count=2),
+        ev(olog.STARTED, sid="three", restarted_from="two", restart_count=2),
+        ev(olog.PARKED, sid="three", last_step_id="a", answers=0), ev(olog.RESUMED, sid="three", last_step_id="a", answers=0),
+        ev(olog.PARKED, sid="three", last_step_id="a", answers=0),
+        ev(olog.STARTED, sid="four", restarted_from=None, restart_count=0),
+        ev(olog.PARKED, sid="four"), ev(olog.RESUMED, sid="four"),
+    ]
+    got = fold_sessions(events)
+    assert (got["one"].status, got["one"].backs) == (olog.STATUS_RESET, 2)
+    assert (got["two"].status, got["two"].restarted_from, got["two"].restart_count) == (olog.STATUS_RESET, "one", 1)
+    assert (got["three"].status, got["three"].parks, got["three"].restart_count) == (olog.STATUS_PARKED, 2, 2)   # parked now
+    assert got["four"].status == olog.STATUS_IN_PROGRESS and got["four"].parks == 1                              # resumed
+    assert status_counts(got.values()) == {olog.STATUS_RESET: 2, olog.STATUS_PARKED: 1, olog.STATUS_IN_PROGRESS: 1}

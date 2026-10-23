@@ -41,9 +41,14 @@ REJECTED = "ending.rejected"
 FINISHED = "session.finished"
 UPDATED = "session.updated"        # a finished session's rating or ticket id changed
 REOPENED = "session.reopened"      # the tech went Back from an ending
-ABANDONED = "session.abandoned"
+ABANDONED = "session.abandoned"    # left part-way without resetting (another flow, closing the app)
+RESET = "session.reset"            # the tech pressed Start Over part-way through
+PARKED = "session.parked"          # the tech swapped to another persona with this call still open
+RESUMED = "session.resumed"        # ...and came back to it
+BACK = "step.back"                 # the tech pressed Back
 NO_RESULTS = "search.no_results"
-EVENT_KINDS = (STARTED, ANSWERED, REJECTED, FINISHED, UPDATED, REOPENED, ABANDONED, NO_RESULTS)
+EVENT_KINDS = (STARTED, ANSWERED, REJECTED, FINISHED, UPDATED, REOPENED, ABANDONED, RESET, PARKED, RESUMED, BACK,
+               NO_RESULTS)
 
 # how a session ends up, as folded from its events
 STATUS_RESOLVED = "resolved"          # finished and the tech said it solved the problem
@@ -51,6 +56,8 @@ STATUS_NOT_RESOLVED = "not_resolved"  # finished and the tech said it did not
 STATUS_FINISHED = "finished"          # reached an ending, no answer to "did this solve it?"
 STATUS_ERROR = "error"                # the flow itself was broken at that point
 STATUS_ABANDONED = "abandoned"        # left mid-flow
+STATUS_RESET = "reset"                # the tech pressed Start Over part-way (a new session follows)
+STATUS_PARKED = "parked"              # on hold while the tech works another persona
 STATUS_IN_PROGRESS = "in_progress"    # no end event yet (still open, or the app died)
 
 Sink = Callable[[dict], bool]
@@ -137,6 +144,10 @@ class SessionSummary:
     search_query: str = ""
     escalated: bool = False
     last_step_id: Optional[str] = None
+    restarted_from: Optional[str] = None   # the session this one replaced when the tech pressed Start Over
+    restart_count: int = 0                 # how many Start Overs came before it on this call
+    parks: int = 0                         # times it was put on hold for another persona
+    backs: int = 0                         # times the tech pressed Back
 
 
 def _status_for(finished: dict) -> str:
@@ -163,6 +174,8 @@ def fold_sessions(events: Iterable[dict]) -> dict[str, SessionSummary]:
             s.started_at = e.get("at", s.started_at)
             s.entry_step_id = e.get("entry_step_id")
             s.search_query = e.get("search_query", "") or ""
+            s.restarted_from = e.get("restarted_from") or None
+            s.restart_count = int(e.get("restart_count") or 0)
         elif kind == ANSWERED:
             s.steps.append((e.get("step_id"), e.get("option_index")))
             s.last_step_id = e.get("step_id")
@@ -174,8 +187,16 @@ def fold_sessions(events: Iterable[dict]) -> dict[str, SessionSummary]:
             s.ticket_ref = e.get("ticket_ref", "") or ""
             s.resolution_id = e.get("resolution_id")
             s.escalated = bool(e.get("escalated"))
-        elif kind == REOPENED:
+        elif kind in (REOPENED, RESUMED):
             s.status = STATUS_IN_PROGRESS
+        elif kind == RESET:
+            s.status = STATUS_RESET
+            s.last_step_id = e.get("last_step_id", s.last_step_id)
+        elif kind == PARKED:
+            s.status = STATUS_PARKED
+            s.parks += 1
+        elif kind == BACK:
+            s.backs += 1
         elif kind == ABANDONED:
             s.status = STATUS_ABANDONED
             s.last_step_id = e.get("last_step_id", s.last_step_id)

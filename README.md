@@ -165,8 +165,9 @@ line, append-only. It records that a session started, each answer (step id and
 answer index), endings the tech rejected, how the session finished (resolved or
 not from the "Did this solve it?" answer, the optional ticket or call id, an
 escalation, a KB article used as the answer), a rating or ticket change after the
-fact, going Back from an ending, **abandoned sessions** (Start Over, another flow,
-or closing the app part-way), and searches that matched nothing. **File → Export
+fact, going Back from an ending, **resets** (Start Over part-way, with a count of how many
+before the call ended), **parked and resumed** calls, **abandoned sessions** (another flow,
+or closing the app part-way), every Back press, and searches that matched nothing. **File → Export
 Outcome Log…** copies it for the client to send back; **Clear Saved Sessions…**
 removes it too. Events hold ids and outcomes, not notes, comments, names or fix
 wording; the ticket id and search query are what a tech typed, so treat the file
@@ -215,8 +216,10 @@ The Player keeps what happened, and the client sends it back as a file:
 2. **Saved locally.** Every finished session (with its ticket, technician, notes
    and rating) is saved as a small JSON file the moment it finishes and updated
    as the tech types, under the app-data folder, one folder per client
-   (`LONGLEAF_DATA_DIR` overrides the location). Going back from an ending
-   un-saves that session. The Editor's Test pane never records anything.
+   (`LONGLEAF_DATA_DIR` overrides the location). Records are never dropped:
+   going back from an ending, Start Over part-way, swapping persona, or leaving for another
+   flow keeps the session, saved as it stands (in progress), so the Editor's overlay shows where
+   techs leave a flow. The Editor's Test pane never records anything.
 3. **Export.** **File → Export Feedback…** writes every saved session into one
    `longleaf_feedback_<client>_<date>.json` for the client to send back
    (exports are cumulative; the Editor ignores repeats). **File → Clear Saved

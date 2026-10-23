@@ -192,7 +192,7 @@ comments and feed the Editor overlay) and is the only record that also sees **ab
 [
   {"v": 1, "event": "session.started", "session_id": "8f1c0d2e", "at": "2026-10-06T14:02:10-05:00",
    "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
-   "entry_step_id": "step_2", "search_query": "wifi keeps dropping"},
+   "entry_step_id": "step_2", "search_query": "wifi keeps dropping", "restarted_from": null, "restart_count": 0},
   {"v": 1, "event": "step.answered", "session_id": "8f1c0d2e", "at": "2026-10-06T14:02:20-05:00",
    "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
    "step_id": "step_2", "option_index": 0},
@@ -209,6 +209,18 @@ comments and feed the Editor overlay) and is the only record that also sees **ab
    "helpful": true, "ticket_ref": "INC-4471", "answers": 2, "rejected": 1},
   {"v": 1, "event": "session.reopened", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:00-05:00",
    "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0"},
+  {"v": 1, "event": "step.back", "session_id": "8f1c0d2e", "at": "2026-10-06T14:03:50-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "from_step_id": "step_3"},
+  {"v": 1, "event": "session.parked", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:10-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "last_step_id": "step_3", "answers": 2},
+  {"v": 1, "event": "session.resumed", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:20-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "last_step_id": "step_3", "answers": 2},
+  {"v": 1, "event": "session.reset", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:25-05:00",
+   "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
+   "last_step_id": "step_3", "answers": 2, "restart_count": 1},
   {"v": 1, "event": "session.abandoned", "session_id": "8f1c0d2e", "at": "2026-10-06T14:04:30-05:00",
    "flow_title": "No network", "flow_client": "acme-hvac", "flow_version": "1.0.0",
    "last_step_id": "step_3", "answers": 2},
@@ -226,13 +238,21 @@ comments and feed the Editor overlay) and is the only record that also sees **ab
 | `session.finished` | The session reached an end. `outcome` is `resolved` or `error`; `helpful` is the tech's answer to "Did this solve it?" (`true` / `false` / `null`); `resolution_id` is the shared resolution, `escalated` the escalation card, `article_id` a KB article used as the resolution. |
 | `session.updated` | A finished session's rating or ticket id changed (sent again only when something changed). |
 | `session.reopened` | The tech went Back from an ending. |
-| `session.abandoned` | The tech started over, opened another flow, or closed the app part-way through. |
+| `session.reset` | The tech pressed Start Over part-way through. The next session's `session.started` carries `restarted_from` (this session's id) and `restart_count` (Start Overs so far on this call), so repeated resets are countable. Start Over after a finished session is just the next call and logs nothing. |
+| `session.abandoned` | The tech opened another flow or closed the app part-way through. |
+| `session.parked` | The agent swapped to another persona with this call still open. The call is kept exactly where it was. |
+| `session.resumed` | ...and swapped back to it. |
+| `step.back` | The tech pressed Back (`from_step_id` is where they were; `null` from an ending). |
 | `search.no_results` | The tech pressed Enter on a search that matched nothing. |
 
 Folding the stream (`outcome_log.fold_sessions`): the **last** event decides how a session ended.
 `helpful: true` is **resolved**, `false` is **not_resolved**, `null` is **finished** (no answer), an
-`error` outcome is **error**, `session.abandoned` is **abandoned**, and a session with none of these
-is **in_progress** (still open, or the app died). Events carry ids and outcomes, not free text: no
+`error` outcome is **error**, `session.abandoned` is **abandoned**, `session.reset` is **reset**,
+`session.parked` is **parked** (until `session.resumed`), and a session with none of these is
+**in_progress** (still open, or the app died). The summary also counts `parks`, `backs`, and carries
+`restart_count` / `restarted_from` so "how often do techs start this flow over" is a count. Nothing is dropped: a session that is reset, parked, abandoned or taken back from its ending is also
+saved to the session files as it stands (`outcome: in_progress`), so the Editor's overlay sees where
+techs leave a flow. Events carry ids and outcomes, not free text: no
 notes, comments, technician names or fix wording. The ticket id and the search query are the two
 things a tech types, so the file can contain customer details if they typed them.
 
