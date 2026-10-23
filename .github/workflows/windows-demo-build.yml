@@ -1,7 +1,8 @@
 name: Windows demo build
 
-# Builds a branded demo Player exe (logo, step + shared-resolution screenshots)
-# on Windows so it can be downloaded and tried by hand.
+# Builds the branded demo Player exe (logo, step + shared-resolution screenshots) and the Editor exe on
+# Windows, and packs them with a personas/ folder and a checklist so they can be downloaded and tried by
+# hand. Run it from the Actions tab (workflow_dispatch) or push to ci/windows-demo-build.
 on:
   workflow_dispatch:
   push:
@@ -19,7 +20,21 @@ jobs:
       - run: python -m pytest tests -q
       - run: python scripts/make_demo_flow.py demo
       - run: python build_client_release.py demo 0.0.1 demo/flow.json
+      - run: python -m PyInstaller Longleaf-Editor.spec --noconfirm --workpath build-editor --distpath dist
+      - name: Start the built Player and Editor (offscreen) and check they stay up
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:LONGLEAF_DATA_DIR = Join-Path $env:RUNNER_TEMP "longleaf-data"
+          foreach ($exe in @("dist\Longleaf-Player-demo-v0.0.1.exe", "dist\Longleaf-Editor.exe")) {
+            $p = Start-Process -FilePath $exe -PassThru
+            Start-Sleep -Seconds 12
+            if ($p.HasExited) { throw "$exe exited early with code $($p.ExitCode)" }
+            Write-Host "$exe is running"
+            Stop-Process -Id $p.Id -Force
+          }
+      - run: python scripts/assemble_demo_bundle.py Longleaf-Windows-demo dist/Longleaf-Player-demo-v0.0.1.exe dist/Longleaf-Editor.exe demo
       - uses: actions/upload-artifact@v4
         with:
-          name: Longleaf-Player-demo-windows
-          path: dist/Longleaf-Player-demo-v0.0.1.exe
+          name: Longleaf-Windows-demo
+          path: Longleaf-Windows-demo
