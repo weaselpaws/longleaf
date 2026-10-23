@@ -28,7 +28,7 @@ def test_a_folder_with_a_flow_is_a_persona_with_the_default_tools(tmp_path):
     make(tmp_path, "acme-hvac")
     (p,) = discover_personas(tmp_path)
     assert (p.id, p.name, p.tools, p.error, p.warnings) == ("acme-hvac", "acme-hvac", DEFAULT_TOOLS, "", [])
-    assert p.flow_path.endswith("acme-hvac/flow.json") and p.usable
+    assert Path(p.flow_path) == tmp_path / "acme-hvac" / "flow.json" and p.usable
 
 
 def test_name_comes_from_persona_json_then_branding_then_client_then_title(tmp_path):
@@ -76,7 +76,7 @@ def test_sorted_by_name_and_ids_stay_unique(tmp_path):
     make(tmp_path, "Zed Co", persona={"name": "Zed"})
     make(tmp_path, "alpha", persona={"name": "alpha"})
     make(tmp_path, "Beta!!", persona={"name": "Beta"})
-    make(tmp_path, "Beta??", persona={"name": "Beta Two"})
+    make(tmp_path, "Beta##", persona={"name": "Beta Two"})      # slugs to the same id as "Beta!!"
     got = discover_personas(tmp_path)
     assert [p.name.lower() for p in got] == sorted(p.name.lower() for p in got)
     assert len({p.id for p in got}) == len(got)

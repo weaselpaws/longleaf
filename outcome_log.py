@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +64,9 @@ STATUS_IN_PROGRESS = "in_progress"    # no end event yet (still open, or the app
 
 Sink = Callable[[dict], bool]
 
+_WRITE_LOCK = threading.Lock()   # whole lines from threads in this process never interleave
+_RETRIES = 6                     # Windows refuses a write while another handle is mid-write; a short wait clears it
+
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat()
@@ -86,14 +91,21 @@ class OutcomeLog:
 
     def emit(self, event: dict) -> bool:
         try:
-            self.folder.mkdir(parents=True, exist_ok=True)
             line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
-            # One write per line, opened for append: whole lines from two Players don't interleave.
-            with open(self.path, "a", encoding="utf-8", newline="\n") as f:
-                f.write(line)
-            return True
+            self.folder.mkdir(parents=True, exist_ok=True)
         except (OSError, TypeError, ValueError):
             return False
+        # One write per line, opened for append. In this process a lock keeps lines whole; across
+        # processes (two Players on one file) it is best effort, with a few retries for Windows
+        # sharing violations. A line that still can't be written is dropped, never an exception.
+        for attempt in range(_RETRIES):
+            try:
+                with _WRITE_LOCK, open(self.path, "a", encoding="utf-8", newline="\n") as f:
+                    f.write(line)
+                return True
+            except OSError:
+                time.sleep(0.01 * (attempt + 1))
+        return False
 
     def read(self) -> list[dict]:
         return read_events(self.path)
