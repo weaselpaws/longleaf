@@ -851,6 +851,97 @@ with _tf2.TemporaryDirectory() as d:
     assert fbk.sessions == 3 and fbk.resolved == 1 and fbk.step_visits["start"] == 3
 print("records: reset / parked / abandoned / taken-back sessions are kept in progress, never dropped OK")
 
+
+# --- Personas: one Player, many businesses; hot-swap parks the call; notepad is a per-persona tool ---
+import json as _pj
+import shutil as _sh
+import player_main as _pm
+import outcome_log as _pol
+
+with _tf2.TemporaryDirectory() as d:
+    pdir = os.path.join(d, "personas")
+    _sh.copytree("examples/personas", pdir)
+    os.makedirs(os.path.join(pdir, "broken"))
+    open(os.path.join(pdir, "broken", "flow.json"), "w").write("{not json")
+    os.makedirs(os.path.join(pdir, "no-notepad"))
+    _sh.copy("examples/customer_support_triage.json", os.path.join(pdir, "no-notepad", "flow.json"))
+    open(os.path.join(pdir, "no-notepad", "persona.json"), "w").write(_pj.dumps({"name": "Initech", "tools": []}))
+    os.environ[_pm.DATA_DIR_ENV] = os.path.join(d, "appdata")
+    pw0 = _pm.PlayerWindow(personas_dir=pdir)
+    pw0.show()
+    ids = list(pw0.slots)
+    assert ids[0] == "default" and set(ids) == {"default", "acme-it", "globex-support", "broken", "no-notepad"}, ids
+    assert not pw0.switcher_bar.isHidden() and pw0.switcher.count() == 5
+    assert not pw0.slots["broken"].info.usable and not pw0.switcher.model().item(ids.index("broken")).isEnabled()
+    assert "couldn't be loaded" in pw0.statusBar().currentMessage()
+    assert pw0.slots["acme-it"].player is None                                            # built the first time you swap to it
+
+    # first persona: take a call part-way, with notes
+    first = pw0.player
+    assert first.notepad is not None and first.tools_tabs is not None and first.notes_input.isHidden()
+    first._choose(first.engine.current_step.options[0])
+    first.notepad.setPlainText("Caller is Dana, laptop on guest wifi")
+    assert first.engine.notes.startswith("Caller is Dana") and first.has_open_call()
+    pw0._refresh_indicators()
+    assert pw0.switcher.itemText(0).startswith("● ")
+
+    # swap to Acme: the first call is parked (saved + logged), the window takes on Acme's look and tools
+    pw0.switch_to("acme-it")
+    assert pw0.current.info.id == "acme-it" and pw0.player is not first and pw0.stack.currentWidget() is pw0.player
+    assert pw0.player.notepad is not None and "Acme IT Help Desk" in pw0.windowTitle()
+    log0 = _pm._log_for(pw0.slots["default"].key).read()
+    assert [e["event"] for e in log0][-1] == _pol.PARKED
+    assert [r.outcome for r in _pm._store_for(pw0.slots["default"].key).load_all()] == ["in_progress"]   # not dropped
+    assert _pm._store_for(pw0.slots["acme-it"].key).count() == 0 and "persona-acme-it" in str(pw0.store.folder)
+
+    # work an Acme call; notes are per persona
+    acme = pw0.player
+    acme._choose(acme.engine.current_step.options[0])
+    acme.notepad.setPlainText("Acme only")
+    assert first.notepad.toPlainText().startswith("Caller is Dana") and acme.engine.notes == "Acme only"
+
+    # swap by keyboard action and by the combo box; a persona without tools has no notepad dock
+    pw0.persona_actions.actions()[ids.index("no-notepad")].trigger()
+    assert pw0.current.info.id == "no-notepad" and pw0.player.tools_tabs is None and not pw0.player.notes_input.isHidden()
+    pw0.switcher.setCurrentIndex(ids.index("default"))
+    pw0._switcher_picked(ids.index("default"))
+    assert pw0.player is first and first.engine.current_step is not None
+    assert [e["event"] for e in _pm._log_for(pw0.slots["default"].key).read()][-1] == _pol.RESUMED
+    assert first.engine.notes.startswith("Caller is Dana")                                # the parked call is exactly as it was
+    pw0.switch_to("broken")                                                                # an unusable persona can't be swapped to
+    assert pw0.player is first
+
+    # finish the first call: the report carries the notepad under "Additional notes"
+    while not first.engine.is_finished:
+        first._choose(first.engine.current_step.options[0])
+    assert "Additional notes" in first.report_box.toPlainText() and "Caller is Dana" in first.report_box.toPlainText()
+    assert "Additional notes" in first.engine.record().to_markdown()
+
+    # exports act on the persona you are on
+    exported = []
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (os.path.join(d, "log-%d.jsonl" % len(exported)), ""))
+    QMessageBox.information = staticmethod(lambda parent, title, text: exported.append(text))
+    pw0.switch_to("acme-it")
+    pw0._export_log()
+    assert len(_pol.read_events(os.path.join(d, "log-0.jsonl"))) == _pm._log_for("persona-acme-it").count()
+    assert not any(e["flow_client"] == "default" for e in _pol.read_events(os.path.join(d, "log-0.jsonl")))
+    pw0.close()                                                                            # closing logs/saves every open call
+    assert [e["event"] for e in _pm._log_for("persona-acme-it").read()][-1] in (_pol.ABANDONED, _pol.FINISHED)
+
+    # a lone flow behaves as before: no switcher, but the notepad is there by default
+    os.environ[_pm.PERSONAS_DIR_ENV] = os.path.join(d, "nothing-here")
+    solo = _pm.PlayerWindow()
+    assert solo.switcher_bar.isHidden() and list(solo.slots) == ["default"] and solo.player.notepad is not None
+    # File > Open Flow adds the flow as one more persona and parks the current call
+    solo.player._choose(solo.player.engine.current_step.options[0])
+    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("examples/customer_support_triage.json", ""))
+    solo._open_flow()
+    assert len(solo.slots) == 2 and not solo.switcher_bar.isHidden() and solo.current.info.id == "opened-1"
+    assert [e["event"] for e in _pm._log_for(solo.slots["default"].key).read()][-1] == _pol.PARKED
+    solo.close()
+    del os.environ[_pm.PERSONAS_DIR_ENV], os.environ[_pm.DATA_DIR_ENV]
+print("personas: discovery, broken persona listed, hot-swap parks + resumes, per-persona notes/store/log, notepad tool, exports, solo mode OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

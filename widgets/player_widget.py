@@ -13,9 +13,9 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGraphicsOpacityEffect, QFrame, QTextEdit, QFileDialog, QApplication,
-    QSizePolicy, QLineEdit, QPlainTextEdit, QMessageBox
+    QSizePolicy, QLineEdit, QPlainTextEdit, QMessageBox, QSplitter, QTabWidget
 )
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QTimer, Signal
 from PySide6.QtGui import QPixmap
 
 from engine import (ARTICLE_ATTACH, ARTICLE_READ, OPTION_OK, OPTION_TRIED, TroubleshootEngine, Tree, OUTCOME_RESOLVED,
@@ -51,8 +51,10 @@ SAVE_DELAY_MS = 600   # typing in notes/comment saves once the tech pauses, not 
 
 
 class PlayerWidget(QWidget):
+    session_state_changed = Signal()   # a call started, finished or was reset: lets a window show which personas have one open
+
     def __init__(self, tree: Tree | None = None, on_step_changed=None, parent=None, session_store=None,
-                 autofocus_search: bool = False, event_sink=None):
+                 autofocus_search: bool = False, event_sink=None, tools: tuple = ()):
         """
         on_step_changed: optional callback(step_id | None) fired whenever the
         engine moves — lets an embedding Editor highlight the live node.
@@ -65,11 +67,13 @@ class PlayerWidget(QWidget):
         event_sink: optional callable(event: dict) -> bool that receives the outcome log events
         (see outcome_log.py). Every event leaves through it, so the file can be swapped for something
         else in one place. Unset in the Editor's Test pane, so test runs are never logged.
+        tools: names of the small tools to show beside the flow (today just "notepad"); see persona.py.
         """
         super().__init__(parent)
         self.on_step_changed = on_step_changed
         self.autofocus_search = autofocus_search
         self.event_sink = event_sink
+        self.tools = tuple(tools)
         self._log_ctx: dict = {}
         self._chain = {"from": None, "count": 0}   # Start Overs part-way through one call, for the log
         self._last_no_result_query = ""
@@ -127,6 +131,11 @@ class PlayerWidget(QWidget):
             self._save_unfinished()
 
     shutdown = end_session   # the app window calls this on close
+
+    def has_open_call(self) -> bool:
+        """True while a call is under way: started, not finished, not left. (A parked call counts.)"""
+        ctx = self._session_ctx()
+        return bool(ctx["started"] and ctx["finished"] is None and not ctx["abandoned"])
 
     def park(self):
         """Put the call on hold (the agent swapped to another persona). Nothing is lost: the session
@@ -187,7 +196,7 @@ class PlayerWidget(QWidget):
     def _reset_report_inputs(self):
         """New session: clear ticket and notes, but keep the tech's name —
         they're the same person working through the next ticket."""
-        for w in (self.ticket_input, self.notes_input, self.feedback_comment):
+        for w in (self.ticket_input, self.notes_input, self.feedback_comment, *([self.notepad] if self.notepad else [])):
             w.blockSignals(True)
             w.clear()
             w.blockSignals(False)
@@ -206,7 +215,14 @@ class PlayerWidget(QWidget):
     # ---------- UI ----------
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._split = QSplitter(Qt.Horizontal)
+        self._split.setChildrenCollapsible(False)
+        outer.addWidget(self._split)
+        flow_column = QWidget()
+        self._split.addWidget(flow_column)
+        root = QVBoxLayout(flow_column)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(14)
 
@@ -373,6 +389,25 @@ class PlayerWidget(QWidget):
         footer.addWidget(self.restart_btn)
         root.addLayout(footer)
 
+        # tools beside the flow (the persona decides which)
+        self.notepad: QPlainTextEdit | None = None
+        self.tools_tabs: QTabWidget | None = None
+        if self.tools:
+            self.tools_tabs = QTabWidget()
+            self.tools_tabs.setMinimumWidth(220)
+            if "notepad" in self.tools:
+                self.notepad = QPlainTextEdit()
+                self.notepad.setPlaceholderText(
+                    "Notes for this call. They go in the report under “Additional notes”, and stay here while you work.")
+                self.notepad.textChanged.connect(self._on_details_changed)
+                self.tools_tabs.addTab(self.notepad, "Notepad")
+            self._split.addWidget(self.tools_tabs)
+            self._split.setStretchFactor(0, 3)
+            self._split.setStretchFactor(1, 1)
+            self._split.setSizes([520, 240])
+            # The notepad *is* the notes box: don't show the same thing twice on the result screen.
+            self.notes_input.setVisible(self.notepad is None)
+
     # ---------- rendering ----------
 
     @staticmethod
@@ -481,6 +516,7 @@ class PlayerWidget(QWidget):
                 self.escalate_btn.setVisible(self.engine.nothing_left())
 
         self._refresh_articles()
+        self.session_state_changed.emit()
 
         if animate:
             self._fade_in()
@@ -617,7 +653,7 @@ class PlayerWidget(QWidget):
     def _on_details_changed(self):
         self.engine.ticket_ref = self.ticket_input.text().strip()
         self.engine.operator = self.operator_input.text().strip()
-        self.engine.notes = self.notes_input.toPlainText()
+        self.engine.notes = (self.notepad or self.notes_input).toPlainText()
         if self.engine.is_finished:
             self._refresh_report()
             self._save_timer.start()
@@ -637,6 +673,8 @@ class PlayerWidget(QWidget):
 
     def _save_now(self):
         self._save_timer.stop()
+        if not self.engine.tree.steps:      # the placeholder empty flow a Player starts with isn't a session
+            return
         if self.engine.is_finished:
             self._log_finished()
         if self.session_store is not None and self.engine.is_finished:

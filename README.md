@@ -157,6 +157,43 @@ anything still there at the next launch means the Editor died, and it offers to
 recover it. Image files you picked are already copied into `images/`, so they
 survive a crash. (`autosave.py`, GUI-free.)
 
+## Personas and tools (Player)
+
+A call center takes calls for many businesses, so one Player can speak for several.
+Each business is a **persona**: a folder in `personas/` beside the exe (or wherever
+`LONGLEAF_PERSONAS_DIR` points) —
+
+```
+personas/
+  acme-hvac/       flow.json  (+ its images)   persona.json (optional)
+  globex-support/  flow.json
+```
+
+— with its own flow, branding and images, and its own session and log files, so one
+business's calls never mix with another's. Adding a business is copying a folder; no
+rebuild. A flow bundled in the exe (the usual client build) is the first persona. With
+two or more, a **Speaking for** switcher appears (and a Persona menu, Ctrl+1…9):
+swapping **parks** the call in progress exactly where it is, with its notes, saved and
+logged as parked; swapping back resumes it, and a ● marks personas with a call open.
+With no personas folder it is the single-flow Player it always was. A persona whose
+flow can't be read is listed greyed out with the reason.
+
+`persona.json` is optional: `{"name": "Acme HVAC", "tools": ["notepad"]}`. `name`
+falls back to the flow's branding name, client or title. `tools` picks the small tools
+shown beside the flow for that persona (default: the notepad; `[]` for none).
+
+**Notepad**: a panel beside the flow for notes about the call. It stays while the
+tech works, is kept per call and per persona, and goes into every report format under
+**Additional notes** (the result screen's own notes box is hidden when the notepad is
+there, so the same text isn't asked for twice).
+
+Nothing is dropped: Start Over part-way through is logged as a **reset** (with a count
+of how many on one call), swapping persona **parks** the call, and a session that is
+reset, parked, abandoned or taken back from its ending is still saved, as in progress.
+`File → Export …` and `Clear Saved Sessions…` act on the persona you are on. To ship a
+call center build, build the Player as usual and put the `personas/` folder next to the
+exe (`build_client_release.py` does not copy it yet).
+
 ## Outcome log (Player)
 
 Beside the full session files, the Player keeps one plain log per client:
