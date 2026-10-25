@@ -27,6 +27,7 @@ from widgets.image_picker import ImagePicker
 from widgets.step_editor import StepEditor
 from widgets.player_widget import PlayerWidget
 from widgets.shared_content import SharedContentDialog
+from outline_import import OutlineError, import_outline
 
 ROOT_MARK = "★ "
 UNREACHABLE_MARK = "⚠ "
@@ -66,6 +67,40 @@ class ValidationDialog(QDialog):
         sid = item.data(Qt.UserRole)
         if sid:
             self.jump_to_step.emit(sid)
+
+
+OUTLINE_HELP = (
+    "One question per line; an answer starts with '-' and its next question goes indented under it.\n"
+    "'- Answer => text' ends the flow with that resolution. '[tags: a, b]' after a question adds search tags.")
+OUTLINE_EXAMPLE = """Does the PC power on?  [tags: power, boot]
+  - Yes
+    Does it reach the login screen?
+      - Yes => Run the update again from Safe Mode.
+      - No => Escalate to hardware.
+  - No => Check the power cable and wall socket."""
+
+
+class OutlineImportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import outline")
+        self.resize(560, 420)
+        layout = QVBoxLayout(self)
+        help_label = QLabel(OUTLINE_HELP)
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        from PySide6.QtWidgets import QPlainTextEdit
+        self.input = QPlainTextEdit()
+        self.input.setPlaceholderText(OUTLINE_EXAMPLE)
+        layout.addWidget(self.input, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Add steps")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def text(self) -> str:
+        return self.input.toPlainText()
 
 
 class BrandingDialog(QDialog):
@@ -259,6 +294,14 @@ class EditorWidget(QWidget):
         add_btn = QPushButton("+ Add Step")
         add_btn.clicked.connect(self._add_step)
         outline_btns.addWidget(add_btn)
+        dup_btn = QPushButton("Duplicate")
+        dup_btn.setToolTip("Copy the selected step (question, tags, answers) as a starting point for a sibling")
+        dup_btn.clicked.connect(self._duplicate_selected_step)
+        outline_btns.addWidget(dup_btn)
+        import_btn = QPushButton("Import…")
+        import_btn.setToolTip("Build steps from an indented text outline")
+        import_btn.clicked.connect(self._import_outline)
+        outline_btns.addWidget(import_btn)
         del_btn = QPushButton("Delete")
         del_btn.setProperty("role", "danger")
         del_btn.clicked.connect(self._delete_selected_step)
@@ -273,6 +316,7 @@ class EditorWidget(QWidget):
         self.step_editor.set_shared_content_hooks(lambda: self.tree, self.new_shared_resolution, self.edit_shared_content)
         self.step_editor.changed.connect(self._on_step_edited)
         self.step_editor.set_as_start_requested.connect(self._set_start_step)
+        self.step_editor.new_step_requested.connect(self._new_step_from_answer)
         splitter.addWidget(self.step_editor)
 
         # --- right pane: live test + graph, as tabs ---
@@ -402,6 +446,41 @@ class EditorWidget(QWidget):
             if self.outline_list.item(i).data(Qt.UserRole) == step.id:
                 self.outline_list.setCurrentRow(i)
                 break
+
+    def _selected_step_id(self) -> str | None:
+        item = self.outline_list.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def _duplicate_selected_step(self):
+        sid = self._selected_step_id()
+        if sid in self.tree.steps:
+            self._show_new_step(self.tree.duplicate_step(sid))
+
+    def _new_step_from_answer(self, option_index: int):
+        sid = self._selected_step_id()
+        if sid in self.tree.steps and option_index < len(self.tree.steps[sid].options):
+            self._show_new_step(self.tree.new_step_from_answer(sid, option_index))
+
+    def _show_new_step(self, step):
+        self._edited()
+        self._refresh_outline(keep_selection=False)
+        self.select_step(step.id)
+        self.step_editor.question_input.setFocus()
+        self.step_editor.question_input.selectAll()
+
+    def _import_outline(self):
+        dlg = OutlineImportDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            steps = import_outline(self.tree, dlg.text())
+        except OutlineError as e:
+            QMessageBox.warning(self, "Import outline", str(e))
+            return
+        self._edited()
+        self._refresh_outline(keep_selection=False)
+        self.select_step(steps[0].id)
+        self.graph.view.fit()
 
     def _delete_selected_step(self):
         item = self.outline_list.currentItem()
