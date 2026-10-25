@@ -263,6 +263,13 @@ def asset_path_problem(rel: str) -> Optional[str]:
 
 SEVERITY_ERROR = "error"      # the flow is broken; don't ship it
 SEVERITY_WARNING = "warning"  # probably a mistake, but the flow still runs
+SEVERITY_HINT = "hint"        # a writing-quality suggestion (Tree.quality_check); never blocks a release
+
+# Thresholds for Tree.quality_check()
+QUALITY_MAX_ANSWERS = 6
+QUALITY_MAX_QUESTION = 240
+QUALITY_MAX_LABEL = 60
+QUALITY_MIN_RESOLUTION = 12
 
 
 @dataclass(frozen=True)
@@ -679,6 +686,43 @@ class Tree:
                     step_id=comp[0])
 
         return issues
+
+    def quality_check(self) -> list[Issue]:
+        """Writing-quality suggestions for a flow that already works. Separate from check(): these are
+        hints (severity "hint"), never errors or warnings, so they don't change validity or block a build.
+        Only steps a tech can actually reach are judged."""
+        out: list[Issue] = []
+        add = lambda code, msg, sid, i=None: out.append(Issue(SEVERITY_HINT, code, msg, sid, i))  # noqa: E731
+        reachable = self.reachable_ids() if self.root_id in self.steps else set(self.steps)
+        by_question: dict[str, str] = {}
+        for sid, step in self.steps.items():
+            if sid not in reachable:
+                continue
+            q = _norm(step.question)
+            if q and q in by_question:
+                add("DUPLICATE_QUESTION", f"'{sid}' asks the same question as '{by_question[q]}'.", sid)
+            elif q:
+                by_question[q] = sid
+            if not step.tags:
+                add("NO_TAGS", f"'{sid}' has no search tags, so a tech can only find it by its question wording.", sid)
+            if len(step.question) > QUALITY_MAX_QUESTION:
+                add("LONG_QUESTION", f"'{sid}' question is {len(step.question)} characters; "
+                    f"move detail into its note and keep the question short.", sid)
+            if len(step.options) == 1:
+                add("ONE_ANSWER", f"'{sid}' has a single answer, so it isn't a decision. "
+                    f"Merge it into the previous step's note?", sid)
+            elif len(step.options) > QUALITY_MAX_ANSWERS:
+                add("MANY_ANSWERS", f"'{sid}' has {len(step.options)} answers; "
+                    f"more than {QUALITY_MAX_ANSWERS} is hard to scan. Split it into two questions?", sid)
+            for i, o in enumerate(step.options):
+                if len(o.label) > QUALITY_MAX_LABEL:
+                    add("LONG_LABEL", f"'{sid}' answer #{i + 1} label is {len(o.label)} characters; "
+                        f"buttons read best short.", sid, i)
+                text = (o.resolution or "").strip()
+                if not o.next_id and not o.resolution_id and text and len(text) < QUALITY_MIN_RESOLUTION:
+                    add("THIN_RESOLUTION", f"'{sid}' answer #{i + 1} ends with only '{text}'; "
+                        f"say what the tech should actually do.", sid, i)
+        return out
 
     def errors(self, base_dir: Optional[str] = None) -> list[Issue]:
         return [i for i in self.check(base_dir) if i.is_error]

@@ -367,3 +367,9 @@ guarantees the Editor can't end up in that exe.
 internal dev builds (`pyinstaller Longleaf-Editor.spec`) — the Player
 spec bundles the repo's own `flow.json`, which is dev/test data, not a
 client's. Never distribute a build made from these specs directly.
+
+## Writing hints (Editor → Validate)
+
+Validate also lists suggestions for a flow that already works, marked ✎: steps with no search tags, a question asked
+twice, very long questions or answer labels, a step with one answer or more than six, and one-word resolutions.
+They never block a release. Only steps a tech can reach are judged.

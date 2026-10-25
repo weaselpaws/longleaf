@@ -1016,6 +1016,13 @@ with _tf2.TemporaryDirectory() as d:
     ew.close()
 print("analytics: Editor mode, flows/cards/endings/searches, card names, jump to card, summary export, bad + repeated files OK")
 
+# --- Validate dialog lists writing hints after errors and warnings ---
+from widgets.editor_widget import ValidationDialog
+_qt = Tree.load("sample_tree.json")
+_vd = ValidationDialog(_qt.check() + _qt.quality_check())
+assert _vd.list.count() == len(_qt.check()) + len(_qt.quality_check())
+print("quality check: Validate dialog OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 
