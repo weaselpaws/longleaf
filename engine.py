@@ -366,6 +366,28 @@ class Tree:
             self.root_id = step.id
         return step
 
+    def duplicate_step(self, step_id: str) -> Step:
+        """A copy of a step with a new id: same question, notes, tags, KB articles and answers.
+        Its answers keep their destinations, so the copy is a ready starting point for a sibling step."""
+        src = self.steps[step_id]
+        data = src.to_dict()
+        data["id"] = self.new_step_id()
+        data["question"] = (src.question + " (copy)") if src.question else ""
+        copy = Step.from_dict(data)
+        self.steps[copy.id] = copy
+        return copy
+
+    def new_step_from_answer(self, step_id: str, option_index: int, question: str = "New question") -> Step:
+        """Create a step and point this answer at it (replacing whatever ending the answer had)."""
+        option = self.steps[step_id].options[option_index]
+        step = Step(id=self.new_step_id(), question=question)
+        self.steps[step.id] = step
+        option.next_id = step.id
+        option.resolution = None
+        option.resolution_id = None
+        option.image = ""
+        return step
+
     def delete_step(self, step_id: str):
         self.steps.pop(step_id, None)
         for s in self.steps.values():

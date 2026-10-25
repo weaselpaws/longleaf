@@ -30,6 +30,7 @@ def parse_tags(text: str) -> list[str]:
 class StepEditor(QWidget):
     changed = Signal()          # any edit to the current step
     set_as_start_requested = Signal(str)
+    new_step_requested = Signal(int)    # index of the answer that should lead to a brand-new step
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -200,6 +201,7 @@ class StepEditor(QWidget):
                             edit_resolution=lambda rid: self.edit_resolution(rid))
             row.changed.connect(self.changed.emit)
             row.remove_requested.connect(self._remove_option)
+            row.new_step_requested.connect(self._new_step_from)
             self.options_layout.insertWidget(self.options_layout.count() - 1, row)
 
     def _add_option(self):
@@ -208,6 +210,10 @@ class StepEditor(QWidget):
         self.step.options.append(Option(label="New answer"))
         self._rebuild_options()
         self.changed.emit()
+
+    def _new_step_from(self, row: OptionRow):
+        if self.step and row.option in self.step.options:
+            self.new_step_requested.emit(self.step.options.index(row.option))
 
     def _remove_option(self, row: OptionRow):
         if not self.step:

@@ -367,3 +367,19 @@ guarantees the Editor can't end up in that exe.
 internal dev builds (`pyinstaller Longleaf-Editor.spec`) — the Player
 spec bundles the repo's own `flow.json`, which is dev/test data, not a
 client's. Never distribute a build made from these specs directly.
+
+## Faster authoring (Editor)
+
+- **＋ Step** on any answer makes a new step and points the answer at it.
+- **Duplicate** copies the selected step (question, tags, KB articles, answers) as a starting point for a sibling.
+- **Import…** builds steps from an indented text outline. `- ` marks an answer, its next question is indented under it,
+  `=> text` ends the flow with that resolution, and `[tags: a, b]` after a question adds search tags:
+
+```
+Does the PC power on?  [tags: power, boot]
+  - Yes
+    Does it reach the login screen?
+      - Yes => Run the update again from Safe Mode.
+      - No => Escalate to hardware.
+  - No => Check the power cable and wall socket.
+```

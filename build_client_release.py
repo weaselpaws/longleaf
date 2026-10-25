@@ -28,7 +28,7 @@ the staged flow.json at the same relative paths.
 Also, before every build, this script statically re-checks that player_main.py's
 import graph can't reach editor_main.py or any of the editor-only widgets
 (widgets/editor_widget.py, widgets/step_editor.py, widgets/option_row.py,
-widgets/image_picker.py, widgets/graph_view.py, graph_layout.py, undo_stack.py, autosave.py, widgets/shared_content.py, analytics.py, widgets/analytics_view.py).
+widgets/image_picker.py, widgets/graph_view.py, graph_layout.py, undo_stack.py, autosave.py, widgets/shared_content.py, analytics.py, outline_import.py, widgets/analytics_view.py).
 If that ever becomes false — e.g. someone adds an "Edit" menu item to the
 Player down the road — the build refuses to run rather than silently
 shipping editing capability to a client.
@@ -50,7 +50,7 @@ ROOT = Path(__file__).parent.resolve()
 PLAYER_ENTRY = ROOT / "player_main.py"
 FORBIDDEN_MODULES = {"editor_main", "widgets.editor_widget", "widgets.step_editor", "widgets.option_row", "widgets.image_picker",
                      "widgets.graph_view", "graph_layout", "undo_stack", "autosave", "widgets.shared_content",
-                     "analytics", "widgets.analytics_view"}
+                     "analytics", "outline_import", "widgets.analytics_view"}
 
 
 def _imported_modules(py_file: Path) -> set[str]:

@@ -1016,6 +1016,26 @@ with _tf2.TemporaryDirectory() as d:
     ew.close()
 print("analytics: Editor mode, flows/cards/endings/searches, card names, jump to card, summary export, bad + repeated files OK")
 
+# --- Editor authoring speed-ups: new step from an answer, duplicate, outline import ---
+import outline_import
+from engine import Option
+te = EditorWidget(Tree())
+te.tree.add_step("Start")
+te.tree.steps["step_1"].options.append(Option(label="Maybe", resolution="x"))
+te._reload_all()
+te.select_step("step_1")
+te.step_editor._rebuild_options()
+row = te.step_editor.options_layout.itemAt(0).widget()
+row.new_step_requested.emit(row)
+assert te.tree.steps["step_1"].options[0].next_id == "step_2" and te._selected_step_id() == "step_2"
+before = len(te.tree.steps)
+te._duplicate_selected_step()
+assert len(te.tree.steps) == before + 1 and te._selected_step_id() == "step_3"
+outline_import.import_outline(te.tree, "Imported Q\n  - A => done\n")
+te._reload_all()
+assert any(s.question == "Imported Q" for s in te.tree.steps.values())
+print("authoring: new step from answer, duplicate, outline import OK")
+
 # --- Player must never be able to reach Editor code (service-model guard) ---
 assert_player_cannot_reach_editor()  # exits the process if this ever fails
 

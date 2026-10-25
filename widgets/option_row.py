@@ -22,6 +22,7 @@ NEW_SHARED = "+ New shared resolution from this text…"
 class OptionRow(QWidget):
     changed = Signal()
     remove_requested = Signal(object)  # passes self
+    new_step_requested = Signal(object)  # passes self: make a new step and point this answer at it
 
     def __init__(self, option: Option, step_choices: list[tuple[str, str]],
                  base_dir_provider=lambda: None, resolution_choices=(), shared_text=lambda rid: "",
@@ -57,6 +58,11 @@ class OptionRow(QWidget):
             self.target_combo.addItem(label, userData=step_id)
         self.target_combo.currentIndexChanged.connect(self._target_changed)
         top.addWidget(self.target_combo, 2)
+
+        new_step_btn = QPushButton("＋ Step")
+        new_step_btn.setToolTip("Make a new step and point this answer at it")
+        new_step_btn.clicked.connect(lambda: self.new_step_requested.emit(self))
+        top.addWidget(new_step_btn)
 
         remove_btn = QPushButton("✕")
         remove_btn.setFixedWidth(30)
