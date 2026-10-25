@@ -31,7 +31,7 @@ from widgets.shared_content import SharedContentDialog
 ROOT_MARK = "★ "
 UNREACHABLE_MARK = "⚠ "
 ERROR_MARK = "✖ "
-SEVERITY_ICON = {"error": "✖", "warning": "⚠"}
+SEVERITY_ICON = {"error": "✖", "warning": "⚠", "hint": "✎"}
 
 
 class ValidationDialog(QDialog):
@@ -44,16 +44,19 @@ class ValidationDialog(QDialog):
         self.resize(560, 360)
         layout = QVBoxLayout(self)
         errors = sum(i.is_error for i in issues)
-        warnings = len(issues) - errors
+        hints = sum(i.severity == "hint" for i in issues)
+        warnings = len(issues) - errors - hints
         layout.addWidget(QLabel(
-            f"{errors} error{'s' if errors != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}"
+            f"{errors} error{'s' if errors != 1 else ''}, {warnings} warning{'s' if warnings != 1 else ''}, "
+            f"{hints} writing hint{'s' if hints != 1 else ''}"
             + (" — errors must be fixed before a client release can be built." if errors else "")
         ))
         self.list = QListWidget()
-        for issue in sorted(issues, key=lambda i: not i.is_error):
+        rank = {"error": 0, "warning": 1, "hint": 2}
+        for issue in sorted(issues, key=lambda i: rank[i.severity]):
             item = QListWidgetItem(f"{SEVERITY_ICON[issue.severity]}  {issue.message}")
             item.setData(Qt.UserRole, issue.step_id)
-            item.setForeground(Qt.red if issue.is_error else Qt.yellow)
+            item.setForeground(Qt.red if issue.is_error else Qt.yellow if issue.severity == "warning" else Qt.gray)
             self.list.addItem(item)
         self.list.itemDoubleClicked.connect(self._jump)
         layout.addWidget(self.list, 1)
@@ -529,7 +532,7 @@ class EditorWidget(QWidget):
             self._refresh_test()
 
     def _run_validate(self):
-        issues = self.tree.check(self.base_dir())
+        issues = self.tree.check(self.base_dir()) + self.tree.quality_check()
         if not issues:
             QMessageBox.information(self, "Validate", "No issues found — this flow looks complete.")
             return

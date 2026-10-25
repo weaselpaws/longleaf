@@ -71,3 +71,19 @@ def test_issue_example_shape():
     i = Issue("error", "MISSING_TARGET", "m", "a", 0)
     m = re.search(r'Issue\n.*?```json\n(.*?)```', DOC, re.S)
     assert set(json.loads(m.group(1))) == set(i.to_dict())
+
+
+def test_every_documented_quality_hint_exists_and_vice_versa():
+    section = DOC.split("### Writing hints", 1)[1].split("\n## ", 1)[0]
+    documented = set(re.findall(r"^\| `([A-Z_]+)` \|", section, re.M))
+    many = [Option(str(n), None, "A long enough resolution.") for n in range(7)]
+    t = Tree(title="T", root_id="a", steps={
+        "a": Step("a", "Same?", many),
+        "b": Step("b", "same?", [Option("x" * 61, None, "ok")]),
+        "c": Step("c", "Q" * 241, [Option("x", None, "ok"), Option("y", "b")], tags=["t"]),
+    })
+    t.steps["a"].options.append(Option("to c", "c"))
+    t.steps["a"].options.append(Option("to b", "b"))
+    emitted = {i.code for i in t.quality_check()}
+    assert emitted == documented, (emitted ^ documented)
+    assert all(i.severity == "hint" for i in t.quality_check())

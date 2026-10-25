@@ -325,6 +325,21 @@ One entry of `POST /flows/validate`'s `issues` (and of the `422` body), from `Is
 | `UNUSED_ARTICLE` | warning | A KB article isn't offered by any step or resolution. |
 | `MISSING_ESCALATION` | error | The flow's `escalation_resolution` names a shared resolution that doesn't exist. |
 
+### Writing hints (`Tree.quality_check()`)
+
+Separate from `check()`: severity `hint`, never an error or warning, never blocks a build. Only steps
+reachable from the start are judged. The Editor's Validate dialog shows them after errors and warnings.
+
+| Code | Meaning |
+|---|---|
+| `NO_TAGS` | A step has no search tags. |
+| `DUPLICATE_QUESTION` | Two reachable steps ask the same question. |
+| `LONG_QUESTION` | A question is over 240 characters. |
+| `ONE_ANSWER` | A step has a single answer, so it isn't a decision. |
+| `MANY_ANSWERS` | A step has more than 6 answers. |
+| `LONG_LABEL` | An answer label is over 60 characters. |
+| `THIN_RESOLUTION` | An inline resolution is under 12 characters. |
+
 ## What would have to be built
 
 Not in scope until a client asks, but so the cost is visible: a small HTTP service over the
